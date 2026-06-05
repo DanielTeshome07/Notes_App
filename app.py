@@ -359,6 +359,15 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/editor")
+@app.route("/editor/<int:doc_id>")
+@login_required
+def editor_page(doc_id=None):
+    """Full-screen writing page. /editor is a blank new file; /editor/<id>
+    edits an existing document (its text is fetched client-side)."""
+    return render_template("editor.html", doc_id=doc_id)
+
+
 @app.route("/add", methods=["POST"])
 @login_required
 def add_note():

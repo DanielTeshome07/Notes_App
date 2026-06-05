@@ -75,36 +75,12 @@
     <section class="card">
       <div class="section-head">
         <h2>Your documents</h2>
-        <button id="new-file-btn" class="btn-secondary">＋ New file</button>
+        <a href="{{ url_for('editor_page') }}" class="btn-link">＋ New file</a>
       </div>
       <p id="doc-count" class="muted" style="margin:0 0 0.4rem"></p>
       <div id="documents"><p class="muted">Loading…</p></div>
     </section>
   </main>
-
-  <!-- Editor overlay -->
-  <div id="editor" class="editor-overlay hidden" role="dialog" aria-modal="true" aria-label="Document editor">
-    <div class="editor-panel">
-      <div class="editor-head">
-        <h2 id="editor-heading">New file</h2>
-        <span id="editor-badge"></span>
-        <button id="editor-close" class="icon-btn" title="Close" aria-label="Close editor">✕</button>
-      </div>
-      <div class="editor-body">
-        <input type="text" id="editor-title" placeholder="Title (optional — first line is used if blank)">
-        <input type="text" id="editor-tags" placeholder="Tags (comma separated, optional)">
-        <textarea id="editor-content" class="editor-textarea" placeholder="Write anything… line breaks are preserved."></textarea>
-      </div>
-      <div class="editor-foot">
-        <button id="editor-save">Save</button>
-        <span class="spacer"></span>
-        <button id="export-pdf" class="btn-secondary" title="Download as PDF">PDF</button>
-        <button id="export-docx" class="btn-secondary" title="Download as Word .docx">.docx</button>
-        <button id="export-txt" class="btn-secondary" title="Download as plain text">.txt</button>
-        <button id="editor-print" class="btn-secondary" title="Open the print dialog">🖨 Print</button>
-      </div>
-    </div>
-  </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
@@ -303,7 +279,7 @@
         box.innerHTML = docs.map((d) => `
           <div class="doc-row">
             <span class="badge badge-${escapeHtml(d.source_type)}">${escapeHtml(d.source_type)}</span>
-            <button class="doc-title-btn" data-open="${d.id}" title="Open in editor">${escapeHtml(d.title)}</button>
+            <a class="doc-title-btn" href="/editor/${d.id}" title="Open in editor">${escapeHtml(d.title)}</a>
             ${tagsHtml(d.tags)}
             <span class="doc-count">${d.chunk_count} ¶</span>
             <button class="delete-btn" data-id="${d.id}" title="Delete">✕</button>
@@ -311,8 +287,6 @@
         `).join("");
         box.querySelectorAll(".delete-btn").forEach((btn) =>
           btn.addEventListener("click", () => deleteDocument(btn.dataset.id)));
-        box.querySelectorAll(".doc-title-btn").forEach((btn) =>
-          btn.addEventListener("click", () => openEditor(btn.dataset.open)));
       } catch (e) {
         if (e.message !== "unauthorized") box.innerHTML = '<p class="status error">Could not load documents.</p>';
       }
@@ -329,117 +303,6 @@
         if (e.message !== "unauthorized") toast("Delete failed.", "error");
       }
     }
-
-    // ---- editor ----
-    // currentDoc is null for an unsaved new file, otherwise the open doc's id.
-    let currentDoc = null;
-
-    function openEditorPanel() {
-      $("#editor").classList.remove("hidden");
-      $("#editor-content").focus();
-    }
-    function closeEditor() {
-      $("#editor").classList.add("hidden");
-      currentDoc = null;
-    }
-    function fillEditor({ id, title, tags, content, source_type }) {
-      currentDoc = id;
-      $("#editor-title").value = title || "";
-      $("#editor-tags").value = (tags || []).join(", ");
-      $("#editor-content").value = content || "";
-      $("#editor-heading").textContent = id ? "Edit document" : "New file";
-      const badge = $("#editor-badge");
-      badge.innerHTML = source_type
-        ? `<span class="badge badge-${escapeHtml(source_type)}">${escapeHtml(source_type)}</span>` : "";
-    }
-
-    function newFile() {
-      fillEditor({ id: null, title: "", tags: [], content: "", source_type: "" });
-      openEditorPanel();
-    }
-
-    async function openEditor(id) {
-      try {
-        const res = await api("/document/" + id);
-        const data = await res.json();
-        if (!res.ok) { toast(data.error || "Could not open.", "error"); return; }
-        fillEditor(data);
-        openEditorPanel();
-      } catch (e) {
-        if (e.message !== "unauthorized") toast("Could not open document.", "error");
-      }
-    }
-
-    // Persist the editor. Returns the saved id, or null on failure.
-    async function saveEditor() {
-      const content = $("#editor-content").value;
-      if (!content.trim()) { toast("Nothing to save — the document is empty.", "error"); return null; }
-      const body = JSON.stringify({
-        title: $("#editor-title").value,
-        content,
-        tags: $("#editor-tags").value,
-      });
-      const url = currentDoc ? "/document/" + currentDoc : "/add";
-      try {
-        const res = await api(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-        const data = await res.json();
-        if (!res.ok) { toast(data.error || "Save failed.", "error"); return null; }
-        currentDoc = data.id;
-        $("#editor-heading").textContent = "Edit document";
-        toast(`Saved “${data.title}”.`, "ok");
-        loadDocuments();
-        if ($("#search-input").value.trim()) runSearch($("#search-input").value);
-        return data.id;
-      } catch (e) {
-        if (e.message !== "unauthorized") toast("Save failed.", "error");
-        return null;
-      }
-    }
-
-    // Exports read from the server, so the current text must be saved first.
-    async function exportAs(fmt) {
-      const id = await saveEditor();
-      if (!id) return;
-      const a = document.createElement("a");
-      a.href = `/export/${id}/${fmt}`;
-      a.download = "";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }
-
-    // Print is client-side so it works without a round-trip, preserving line breaks.
-    function printEditor() {
-      const title = $("#editor-title").value.trim() || "Untitled";
-      const content = $("#editor-content").value;
-      const w = window.open("", "_blank");
-      if (!w) { toast("Pop-up blocked — allow pop-ups to print.", "error"); return; }
-      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
-        <style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55;
-        max-width:42rem;margin:2rem auto;padding:0 1rem;color:#000}
-        h1{font-size:1.4rem}pre{white-space:pre-wrap;font:inherit;margin:0}</style></head>
-        <body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(content)}</pre></body></html>`);
-      w.document.close();
-      w.focus();
-      w.print();
-    }
-
-    $("#new-file-btn").addEventListener("click", newFile);
-    $("#editor-close").addEventListener("click", closeEditor);
-    $("#editor-save").addEventListener("click", saveEditor);
-    $("#export-pdf").addEventListener("click", () => exportAs("pdf"));
-    $("#export-docx").addEventListener("click", () => exportAs("docx"));
-    $("#export-txt").addEventListener("click", () => exportAs("txt"));
-    $("#editor-print").addEventListener("click", printEditor);
-    // Click the dark backdrop (not the panel) or press Esc to close.
-    $("#editor").addEventListener("click", (e) => { if (e.target.id === "editor") closeEditor(); });
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !$("#editor").classList.contains("hidden")) closeEditor();
-    });
 
     loadDocuments();
   </script>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ "Edit document" if doc_id else "New file" }} — Notes</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script>
+    // Apply saved/system theme before paint to avoid a flash of the wrong theme.
+    (function () {
+      const saved = localStorage.getItem("theme");
+      const dark = saved ? saved === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      if (dark) document.documentElement.setAttribute("data-theme", "dark");
+    })();
+  </script>
+</head>
+<body class="editor-page">
+  <div class="editor-toolbar">
+    <a href="{{ url_for('index') }}" class="icon-btn" title="Back to notes" aria-label="Back to notes">←</a>
+    <input type="text" id="ed-title" class="ed-title-input" placeholder="Untitled — type a title (optional)">
+    <span id="ed-badge"></span>
+    <span class="ed-tools">
+      <button id="ed-save">Save</button>
+      <button id="ed-pdf" class="btn-secondary" title="Save &amp; download as PDF">PDF</button>
+      <button id="ed-docx" class="btn-secondary" title="Save &amp; download as Word .docx">.docx</button>
+      <button id="ed-txt" class="btn-secondary" title="Save &amp; download as plain text">.txt</button>
+      <button id="ed-print" class="btn-secondary" title="Print">🖨</button>
+    </span>
+  </div>
+  <div class="editor-subbar">
+    <input type="text" id="ed-tags" class="ed-tags-input" placeholder="Tags (comma separated, optional)">
+    <span id="ed-status" class="ed-status"></span>
+  </div>
+  <textarea id="ed-content" class="editor-fullarea"
+    placeholder="Start writing… line breaks are preserved. Ctrl/⌘+S to save." autofocus></textarea>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    // DOC_ID is null on the blank "new file" page, or the id when editing.
+    const DOC_ID = {{ doc_id if doc_id else 'null' }};
+    const isNewPage = DOC_ID === null;
+    let currentDoc = DOC_ID;
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+    function toast(msg, kind) {
+      const el = document.createElement("div");
+      el.className = "toast" + (kind ? " " + kind : "");
+      el.textContent = msg;
+      $("#toasts").appendChild(el);
+      setTimeout(() => el.classList.add("show"), 10);
+      setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 300); }, 3200);
+    }
+    async function api(url, opts) {
+      const res = await fetch(url, opts);
+      if (res.status === 401) { window.location = "/login"; throw new Error("unauthorized"); }
+      return res;
+    }
+    function setBadge(type) {
+      $("#ed-badge").innerHTML = type
+        ? `<span class="badge badge-${escapeHtml(type)}">${escapeHtml(type)}</span>` : "";
+    }
+    function setStatus(text, kind) {
+      const el = $("#ed-status");
+      el.textContent = text;
+      el.className = "ed-status" + (kind ? " " + kind : "");
+    }
+
+    // ---- load an existing document into the page ----
+    async function load() {
+      if (isNewPage) { $("#ed-content").focus(); return; }
+      try {
+        const res = await api("/document/" + DOC_ID);
+        const d = await res.json();
+        if (!res.ok) { toast(d.error || "Could not open.", "error"); return; }
+        $("#ed-title").value = d.title || "";
+        $("#ed-tags").value = (d.tags || []).join(", ");
+        $("#ed-content").value = d.content || "";
+        setBadge(d.source_type);
+        document.title = `${d.title} — Notes`;
+        $("#ed-content").focus();
+      } catch (e) {
+        if (e.message !== "unauthorized") toast("Could not open document.", "error");
+      }
+    }
+
+    // Wipe the page back to a blank new file (used after saving on /editor).
+    function clearAll() {
+      $("#ed-title").value = "";
+      $("#ed-tags").value = "";
+      $("#ed-content").value = "";
+      currentDoc = null;
+      setBadge("");
+      setStatus("");
+      $("#ed-content").focus();
+    }
+
+    // Persist the page. Returns the saved id, or null on failure.
+    async function save({ clearAfter = false } = {}) {
+      const content = $("#ed-content").value;
+      if (!content.trim()) { toast("Nothing to save — the page is empty.", "error"); return null; }
+      const url = currentDoc ? "/document/" + currentDoc : "/add";
+      try {
+        const res = await api(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: $("#ed-title").value,
+            content,
+            tags: $("#ed-tags").value,
+          }),
+        });
+        const d = await res.json();
+        if (!res.ok) { toast(d.error || "Save failed.", "error"); return null; }
+        currentDoc = d.id;
+        if (clearAfter) {
+          toast(`Saved “${d.title}”. Cleared for a new file.`, "ok");
+          clearAll();
+        } else {
+          setStatus("Saved", "saved");
+          toast(`Saved “${d.title}”.`, "ok");
+        }
+        return d.id;
+      } catch (e) {
+        if (e.message !== "unauthorized") toast("Save failed.", "error");
+        return null;
+      }
+    }
+
+    // Exports read from the server, so save first (without clearing the page).
+    async function exportAs(fmt) {
+      const id = await save({ clearAfter: false });
+      if (!id) return;
+      const a = document.createElement("a");
+      a.href = `/export/${id}/${fmt}`;
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+
+    // Print client-side so it works without a round-trip, preserving line breaks.
+    function printDoc() {
+      const title = $("#ed-title").value.trim() || "Untitled";
+      const content = $("#ed-content").value;
+      const w = window.open("", "_blank");
+      if (!w) { toast("Pop-up blocked — allow pop-ups to print.", "error"); return; }
+      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+        <style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55;
+        max-width:42rem;margin:2rem auto;padding:0 1rem;color:#000}
+        h1{font-size:1.4rem}pre{white-space:pre-wrap;font:inherit;margin:0}</style></head>
+        <body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(content)}</pre></body></html>`);
+      w.document.close();
+      w.focus();
+      w.print();
+    }
+
+    $("#ed-save").addEventListener("click", () => save({ clearAfter: isNewPage }));
+    $("#ed-pdf").addEventListener("click", () => exportAs("pdf"));
+    $("#ed-docx").addEventListener("click", () => exportAs("docx"));
+    $("#ed-txt").addEventListener("click", () => exportAs("txt"));
+    $("#ed-print").addEventListener("click", printDoc);
+
+    // Show an unsaved indicator as soon as the user changes anything.
+    ["#ed-title", "#ed-tags", "#ed-content"].forEach((s) =>
+      $(s).addEventListener("input", () => setStatus("Unsaved changes", "dirty")));
+
+    // Ctrl/⌘+S saves instead of triggering the browser's save dialog.
+    document.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        save({ clearAfter: isNewPage });
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>
