@@ -1,15 +1,34 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Notes App — Personal Knowledge Base</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script>
+    // Apply saved/system theme before paint to avoid a flash of the wrong theme.
+    (function () {
+      const saved = localStorage.getItem("theme");
+      const dark = saved ? saved === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      if (dark) document.documentElement.setAttribute("data-theme", "dark");
+    })();
+  </script>
 </head>
 <body>
   <header>
-    <h1>📒 Notes</h1>
-    <p class="tagline">Your personal knowledge base — search everything down to the paragraph.</p>
+    <div class="header-bar">
+      <div class="brand">
+        <h1>📒 Notes</h1>
+        <p class="tagline">Search everything down to the paragraph.</p>
+      </div>
+      <div class="header-actions">
+        <button id="theme-toggle" class="icon-btn" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+        <form method="POST" action="{{ url_for('logout') }}" id="logout-form">
+          <button type="submit" class="icon-btn" title="Sign out" aria-label="Sign out">⎋</button>
+        </form>
+      </div>
+    </div>
   </header>
 
   <main>
@@ -23,6 +42,7 @@
         Try <code>"exact phrase"</code>, <code>meet*</code> (prefix), or
         <code>deadline NEAR/3 budget</code>.
       </p>
+      <div id="tag-filter" class="tag-filter hidden"></div>
       <div id="search-status" class="status"></div>
       <div id="results"></div>
     </section>
@@ -34,41 +54,60 @@
         <form id="note-form">
           <input type="text" id="note-title" placeholder="Title (optional)">
           <textarea id="note-content" rows="6" placeholder="Paste or type anything… separate paragraphs with a blank line."></textarea>
+          <input type="text" id="note-tags" placeholder="Tags (comma separated, optional)">
           <button type="submit">Save note</button>
         </form>
-        <div id="note-status" class="status"></div>
       </section>
 
       <!-- Upload -->
       <section class="card">
         <h2>Upload a file</h2>
-        <form id="upload-form">
-          <input type="file" id="file-input" accept=".pdf,.docx,.txt">
-          <button type="submit">Upload</button>
-        </form>
-        <p class="hint">PDF, DOCX, or TXT.</p>
-        <div id="upload-status" class="status"></div>
+        <div id="dropzone" class="dropzone">
+          <p class="dropzone-text">Drag &amp; drop a file here, or click to choose</p>
+          <p class="hint">PDF, DOCX, or TXT</p>
+          <input type="file" id="file-input" accept=".pdf,.docx,.txt" multiple hidden>
+        </div>
+        <input type="text" id="upload-tags" placeholder="Tags for upload (comma separated, optional)">
       </section>
     </div>
 
     <!-- Documents -->
     <section class="card">
-      <h2>Your documents</h2>
+      <div class="section-head">
+        <h2>Your documents</h2>
+        <span id="doc-count" class="muted"></span>
+      </div>
       <div id="documents"><p class="muted">Loading…</p></div>
     </section>
   </main>
 
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
   <script>
     const $ = (sel) => document.querySelector(sel);
+    let activeTag = null;
 
+    // ---- theme ----
+    function currentlyDark() {
+      return document.documentElement.getAttribute("data-theme") === "dark";
+    }
+    function updateThemeIcon() {
+      $("#theme-toggle").textContent = currentlyDark() ? "☀️" : "🌙";
+    }
+    $("#theme-toggle").addEventListener("click", () => {
+      const dark = !currentlyDark();
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      localStorage.setItem("theme", dark ? "dark" : "light");
+      updateThemeIcon();
+    });
+    updateThemeIcon();
+
+    // ---- helpers ----
     function escapeHtml(s) {
       return s.replace(/[&<>"']/g, (c) => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
       }[c]));
     }
-
-    // Snippets arrive with \x02 / \x03 sentinels around matches. Escape first,
-    // then swap sentinels for <mark> so highlighting is XSS-safe.
     const MARK_OPEN = String.fromCharCode(2);
     const MARK_CLOSE = String.fromCharCode(3);
     function renderSnippet(snippet) {
@@ -76,28 +115,66 @@
         .split(MARK_OPEN).join("<mark>")
         .split(MARK_CLOSE).join("</mark>");
     }
-
+    function tagsHtml(tags) {
+      if (!tags || !tags.length) return "";
+      return '<span class="tags">' + tags.map((t) =>
+        `<button class="tag" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}</button>`
+      ).join("") + "</span>";
+    }
     function setStatus(el, msg, kind) {
       el.textContent = msg;
       el.className = "status" + (kind ? " " + kind : "");
     }
+    function toast(msg, kind) {
+      const el = document.createElement("div");
+      el.className = "toast" + (kind ? " " + kind : "");
+      el.textContent = msg;
+      $("#toasts").appendChild(el);
+      setTimeout(() => el.classList.add("show"), 10);
+      setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 300); }, 3200);
+    }
+    // Any 401 means the session expired — bounce to the login page.
+    async function api(url, opts) {
+      const res = await fetch(url, opts);
+      if (res.status === 401) { window.location = "/login"; throw new Error("unauthorized"); }
+      return res;
+    }
 
-    // ---- Search ----
+    // ---- tag filtering ----
+    function setTagFilter(tag) {
+      activeTag = tag;
+      const bar = $("#tag-filter");
+      if (tag) {
+        bar.classList.remove("hidden");
+        bar.innerHTML = `Filtering by <span class="tag active">#${escapeHtml(tag)}</span> ` +
+          `<button id="clear-tag" class="link-btn">clear</button>`;
+        $("#clear-tag").addEventListener("click", () => setTagFilter(null));
+      } else {
+        bar.classList.add("hidden");
+        bar.innerHTML = "";
+      }
+      loadDocuments();
+      if ($("#search-input").value.trim()) runSearch($("#search-input").value);
+    }
+    // Delegate clicks on any tag chip.
+    document.addEventListener("click", (e) => {
+      const t = e.target.closest(".tag[data-tag]");
+      if (t) { e.preventDefault(); setTagFilter(t.dataset.tag); }
+    });
+
+    // ---- search ----
     async function runSearch(q) {
       const status = $("#search-status");
       const results = $("#results");
-      if (!q.trim()) {
-        results.innerHTML = "";
-        setStatus(status, "");
-        return;
-      }
+      if (!q.trim()) { results.innerHTML = ""; setStatus(status, ""); return; }
       setStatus(status, "Searching…");
       try {
-        const res = await fetch("/search?q=" + encodeURIComponent(q));
-        const data = await res.json();
+        let url = "/search?q=" + encodeURIComponent(q);
+        if (activeTag) url += "&tag=" + encodeURIComponent(activeTag);
+        const data = await (await api(url)).json();
         if (!data.count) {
           results.innerHTML = "";
-          setStatus(status, "No matches found.");
+          setStatus(status, "No matches found" + (activeTag ? ` in #${activeTag}` : "") + ".");
           return;
         }
         setStatus(status, `${data.count} matching paragraph${data.count === 1 ? "" : "s"}.`);
@@ -106,102 +183,123 @@
             <div class="result-meta">
               <span class="badge badge-${escapeHtml(r.source_type)}">${escapeHtml(r.source_type)}</span>
               <span class="result-title">${escapeHtml(r.title)}</span>
+              ${tagsHtml(r.tags)}
             </div>
-            <p class="result-snippet">${renderSnippet(r.snippet)}</p>
+            <p class="result-snippet clamp">${renderSnippet(r.snippet)}</p>
           </article>
         `).join("");
+        // Click a snippet to expand/collapse long paragraphs.
+        results.querySelectorAll(".result-snippet").forEach((p) => {
+          p.addEventListener("click", () => p.classList.toggle("clamp"));
+        });
       } catch (e) {
-        setStatus(status, "Search failed.", "error");
+        if (e.message !== "unauthorized") setStatus(status, "Search failed.", "error");
       }
     }
-
     $("#search-form").addEventListener("submit", (e) => {
       e.preventDefault();
       runSearch($("#search-input").value);
     });
 
-    // ---- Add note ----
+    // ---- add note ----
     $("#note-form").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const status = $("#note-status");
       const content = $("#note-content").value;
-      if (!content.trim()) {
-        setStatus(status, "Note is empty.", "error");
-        return;
-      }
-      setStatus(status, "Saving…");
+      if (!content.trim()) { toast("Note is empty.", "error"); return; }
+      const btn = e.submitter; btn.disabled = true;
       try {
-        const res = await fetch("/add", {
+        const res = await api("/add", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: $("#note-title").value, content }),
+          body: JSON.stringify({
+            title: $("#note-title").value,
+            content,
+            tags: $("#note-tags").value,
+          }),
         });
         const data = await res.json();
-        if (!res.ok) { setStatus(status, data.error || "Failed.", "error"); return; }
-        setStatus(status, `Saved “${data.title}” (${data.chunks} paragraph${data.chunks === 1 ? "" : "s"}).`, "ok");
+        if (!res.ok) { toast(data.error || "Failed.", "error"); return; }
+        toast(`Saved “${data.title}” (${data.chunks} ¶).`, "ok");
         $("#note-form").reset();
         loadDocuments();
       } catch (e) {
-        setStatus(status, "Save failed.", "error");
-      }
+        if (e.message !== "unauthorized") toast("Save failed.", "error");
+      } finally { btn.disabled = false; }
     });
 
-    // ---- Upload ----
-    $("#upload-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const status = $("#upload-status");
-      const file = $("#file-input").files[0];
-      if (!file) { setStatus(status, "Choose a file first.", "error"); return; }
-      setStatus(status, "Uploading…");
-      const fd = new FormData();
-      fd.append("file", file);
-      try {
-        const res = await fetch("/upload", { method: "POST", body: fd });
-        const data = await res.json();
-        if (!res.ok) { setStatus(status, data.error || "Failed.", "error"); return; }
-        setStatus(status, `Uploaded “${data.title}” (${data.chunks} paragraph${data.chunks === 1 ? "" : "s"}).`, "ok");
-        $("#upload-form").reset();
-        loadDocuments();
-      } catch (e) {
-        setStatus(status, "Upload failed.", "error");
-      }
-    });
+    // ---- upload (button + drag & drop, multiple files) ----
+    const dropzone = $("#dropzone");
+    const fileInput = $("#file-input");
+    dropzone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => uploadFiles(fileInput.files));
+    ["dragenter", "dragover"].forEach((ev) =>
+      dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
+    ["dragleave", "drop"].forEach((ev) =>
+      dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); }));
+    dropzone.addEventListener("drop", (e) => uploadFiles(e.dataTransfer.files));
 
-    // ---- Documents list ----
+    async function uploadFiles(fileList) {
+      const files = Array.from(fileList);
+      if (!files.length) return;
+      const tags = $("#upload-tags").value;
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("tags", tags);
+        toast(`Uploading ${file.name}…`);
+        try {
+          const res = await api("/upload", { method: "POST", body: fd });
+          const data = await res.json();
+          if (!res.ok) { toast(`${file.name}: ${data.error || "failed"}`, "error"); continue; }
+          toast(`Uploaded “${data.title}” (${data.chunks} ¶).`, "ok");
+        } catch (e) {
+          if (e.message !== "unauthorized") toast(`${file.name}: upload failed.`, "error");
+        }
+      }
+      fileInput.value = "";
+      loadDocuments();
+    }
+
+    // ---- documents list ----
     async function loadDocuments() {
       const box = $("#documents");
       try {
-        const res = await fetch("/documents");
-        const data = await res.json();
-        if (!data.documents.length) {
-          box.innerHTML = '<p class="muted">No documents yet. Add a note or upload a file.</p>';
+        const data = await (await api("/documents")).json();
+        let docs = data.documents;
+        if (activeTag) docs = docs.filter((d) => (d.tags || []).includes(activeTag));
+        $("#doc-count").textContent = docs.length
+          ? `${docs.length} document${docs.length === 1 ? "" : "s"}` : "";
+        if (!docs.length) {
+          box.innerHTML = activeTag
+            ? `<p class="muted">No documents tagged #${escapeHtml(activeTag)}.</p>`
+            : '<p class="muted">No documents yet. Add a note or upload a file to get started.</p>';
           return;
         }
-        box.innerHTML = data.documents.map((d) => `
+        box.innerHTML = docs.map((d) => `
           <div class="doc-row">
             <span class="badge badge-${escapeHtml(d.source_type)}">${escapeHtml(d.source_type)}</span>
             <span class="doc-title">${escapeHtml(d.title)}</span>
+            ${tagsHtml(d.tags)}
             <span class="doc-count">${d.chunk_count} ¶</span>
             <button class="delete-btn" data-id="${d.id}" title="Delete">✕</button>
           </div>
         `).join("");
-        box.querySelectorAll(".delete-btn").forEach((btn) => {
-          btn.addEventListener("click", () => deleteDocument(btn.dataset.id));
-        });
+        box.querySelectorAll(".delete-btn").forEach((btn) =>
+          btn.addEventListener("click", () => deleteDocument(btn.dataset.id)));
       } catch (e) {
-        box.innerHTML = '<p class="status error">Could not load documents.</p>';
+        if (e.message !== "unauthorized") box.innerHTML = '<p class="status error">Could not load documents.</p>';
       }
     }
 
     async function deleteDocument(id) {
       if (!confirm("Delete this document and all its paragraphs?")) return;
       try {
-        await fetch("/delete/" + id, { method: "POST" });
+        await api("/delete/" + id, { method: "POST" });
+        toast("Deleted.", "ok");
         loadDocuments();
-        // Refresh results so deleted content disappears from view.
-        runSearch($("#search-input").value);
+        if ($("#search-input").value.trim()) runSearch($("#search-input").value);
       } catch (e) {
-        alert("Delete failed.");
+        if (e.message !== "unauthorized") toast("Delete failed.", "error");
       }
     }
 
