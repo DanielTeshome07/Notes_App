@@ -72,10 +72,13 @@ sites**, so they need root and care. Add this block to
 Then create the DNS record and reload the tunnel:
 
 ```bash
-# Adds the proxied CNAME for note. -> the tunnel automatically:
-sudo cloudflared tunnel route dns d2d9aa1c-74d2-4945-9973-72c35104561e note.danielteshome.dev
+# Adds the proxied CNAME for note. -> the tunnel automatically.
+# Run WITHOUT sudo: route dns needs the account cert (~/.cloudflared/cert.pem),
+# and sudo would look in /root/.cloudflared instead. (Alternatively, under sudo:
+# sudo cloudflared --origincert /home/daniel/.cloudflared/cert.pem tunnel route dns ...)
+cloudflared tunnel route dns d2d9aa1c-74d2-4945-9973-72c35104561e note.danielteshome.dev
 
-sudo systemctl restart cloudflared
+sudo systemctl restart cloudflared   # systemctl needs root
 ```
 
 Verify:

@@ -45,5 +45,6 @@ fi
 
 echo
 echo "Now run these two, then check https://$HOST/healthz :"
-echo "  sudo cloudflared tunnel route dns $TUNNEL $HOST"
+echo "  # route dns WITHOUT sudo, so cloudflared finds cert.pem in your ~/.cloudflared:"
+echo "  cloudflared tunnel route dns $TUNNEL $HOST"
 echo "  sudo systemctl restart cloudflared"
