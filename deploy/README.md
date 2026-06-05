@@ -1,8 +1,14 @@
 # Deploying Notes App to k3s + Cloudflare
 
 The app runs as a single replica with a SQLite database on a PersistentVolume,
-behind a password, exposed at **https://note.danielteshome.dev** via Traefik
-(`traefik-external`) and Cloudflare — the same pattern as `api.danielteshome.dev`.
+behind a password, exposed at **https://note.danielteshome.dev**.
+
+**How public routing works on this cluster:** the host-level `cloudflared`
+tunnel (`/etc/cloudflared/config.yml`) maps each `*.danielteshome.dev` hostname
+straight to a Service **NodePort** on `localhost` — it does *not* use a Traefik
+Ingress for public traffic (the `traefik-external` ingress class doesn't exist
+here). So `noteapp`'s Service is a NodePort (pinned to `30568`), and going live
+means adding one entry to that tunnel config plus a DNS record.
 
 ## 1. Build & push the image
 
@@ -41,20 +47,44 @@ kubectl -n noteapp set image deploy/noteapp noteapp=danieltesh/noteapp:$TAG
 kubectl -n noteapp rollout status deploy/noteapp
 ```
 
-Verify in-cluster before touching DNS:
+Verify the actual public path (the NodePort the tunnel will hit) before going live:
 
 ```bash
 kubectl -n noteapp get pods
-kubectl -n noteapp port-forward svc/noteapp 8080:80   # then open http://localhost:8080
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:30568/healthz   # expect 200
 ```
 
-## 4. DNS (the one manual Cloudflare step)
+## 4. Expose it (host cloudflared tunnel + DNS)
 
-`note.danielteshome.dev` has no record yet (there is no wildcard). In the
-Cloudflare dashboard for `danielteshome.dev`, add a record for `note` that
-matches how `api` is configured (same origin / tunnel, **Proxied / orange
-cloud**). Once it resolves, `https://note.danielteshome.dev` will serve the app
-behind the password.
+These steps touch the **live tunnel that serves all your danielteshome.dev
+sites**, so they need root and care. Add this block to
+`/etc/cloudflared/config.yml`, immediately **before** the final
+`- service: http_status:404` catch-all:
+
+```yaml
+  - hostname: note.danielteshome.dev
+    service: http://localhost:30568
+    originRequest:
+      httpHostHeader: note.danielteshome.dev
+      noTLSVerify: true
+```
+
+Then create the DNS record and reload the tunnel:
+
+```bash
+# Adds the proxied CNAME for note. -> the tunnel automatically:
+sudo cloudflared tunnel route dns d2d9aa1c-74d2-4945-9973-72c35104561e note.danielteshome.dev
+
+sudo systemctl restart cloudflared
+```
+
+Verify:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://note.danielteshome.dev/healthz   # expect 200
+```
+
+Then open **https://note.danielteshome.dev** — you'll get the password page.
 
 ## Operations
 

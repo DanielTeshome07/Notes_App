@@ -93,35 +93,20 @@ spec:
           persistentVolumeClaim:
             claimName: noteapp-data
 ---
+# This cluster exposes public sites by routing each *.danielteshome.dev hostname
+# from the host cloudflared tunnel (/etc/cloudflared/config.yml) straight to a
+# Service NodePort — it does not use a Traefik Ingress for public traffic. So the
+# Service is NodePort with a pinned port the tunnel forwards to. See deploy/README.md.
 apiVersion: v1
 kind: Service
 metadata:
   name: noteapp
   namespace: noteapp
 spec:
+  type: NodePort
   selector:
     app: noteapp
   ports:
     - port: 80
       targetPort: 5000
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: noteapp
-  namespace: noteapp
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
-spec:
-  ingressClassName: traefik-external
-  rules:
-    - host: note.danielteshome.dev
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: noteapp
-                port:
-                  number: 80
+      nodePort: 30568   # host cloudflared forwards note.danielteshome.dev -> localhost:30568
