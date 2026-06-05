@@ -1,0 +1,17 @@
+# Local database
+notes.db
+notes.db-shm
+notes.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

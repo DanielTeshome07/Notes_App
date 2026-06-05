@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notes App — Personal Knowledge Base</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>📒 Notes</h1>
+    <p class="tagline">Your personal knowledge base — search everything down to the paragraph.</p>
+  </header>
+
+  <main>
+    <!-- Search -->
+    <section class="card search-card">
+      <form id="search-form" autocomplete="off">
+        <input type="search" id="search-input" placeholder="Search your notes and documents…" aria-label="Search">
+        <button type="submit">Search</button>
+      </form>
+      <p class="hint">
+        Try <code>"exact phrase"</code>, <code>meet*</code> (prefix), or
+        <code>deadline NEAR/3 budget</code>.
+      </p>
+      <div id="search-status" class="status"></div>
+      <div id="results"></div>
+    </section>
+
+    <div class="columns">
+      <!-- Add note -->
+      <section class="card">
+        <h2>Add a note</h2>
+        <form id="note-form">
+          <input type="text" id="note-title" placeholder="Title (optional)">
+          <textarea id="note-content" rows="6" placeholder="Paste or type anything… separate paragraphs with a blank line."></textarea>
+          <button type="submit">Save note</button>
+        </form>
+        <div id="note-status" class="status"></div>
+      </section>
+
+      <!-- Upload -->
+      <section class="card">
+        <h2>Upload a file</h2>
+        <form id="upload-form">
+          <input type="file" id="file-input" accept=".pdf,.docx,.txt">
+          <button type="submit">Upload</button>
+        </form>
+        <p class="hint">PDF, DOCX, or TXT.</p>
+        <div id="upload-status" class="status"></div>
+      </section>
+    </div>
+
+    <!-- Documents -->
+    <section class="card">
+      <h2>Your documents</h2>
+      <div id="documents"><p class="muted">Loading…</p></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    // Snippets arrive with \x02 / \x03 sentinels around matches. Escape first,
+    // then swap sentinels for <mark> so highlighting is XSS-safe.
+    const MARK_OPEN = String.fromCharCode(2);
+    const MARK_CLOSE = String.fromCharCode(3);
+    function renderSnippet(snippet) {
+      return escapeHtml(snippet)
+        .split(MARK_OPEN).join("<mark>")
+        .split(MARK_CLOSE).join("</mark>");
+    }
+
+    function setStatus(el, msg, kind) {
+      el.textContent = msg;
+      el.className = "status" + (kind ? " " + kind : "");
+    }
+
+    // ---- Search ----
+    async function runSearch(q) {
+      const status = $("#search-status");
+      const results = $("#results");
+      if (!q.trim()) {
+        results.innerHTML = "";
+        setStatus(status, "");
+        return;
+      }
+      setStatus(status, "Searching…");
+      try {
+        const res = await fetch("/search?q=" + encodeURIComponent(q));
+        const data = await res.json();
+        if (!data.count) {
+          results.innerHTML = "";
+          setStatus(status, "No matches found.");
+          return;
+        }
+        setStatus(status, `${data.count} matching paragraph${data.count === 1 ? "" : "s"}.`);
+        results.innerHTML = data.results.map((r) => `
+          <article class="result">
+            <div class="result-meta">
+              <span class="badge badge-${escapeHtml(r.source_type)}">${escapeHtml(r.source_type)}</span>
+              <span class="result-title">${escapeHtml(r.title)}</span>
+            </div>
+            <p class="result-snippet">${renderSnippet(r.snippet)}</p>
+          </article>
+        `).join("");
+      } catch (e) {
+        setStatus(status, "Search failed.", "error");
+      }
+    }
+
+    $("#search-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      runSearch($("#search-input").value);
+    });
+
+    // ---- Add note ----
+    $("#note-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const status = $("#note-status");
+      const content = $("#note-content").value;
+      if (!content.trim()) {
+        setStatus(status, "Note is empty.", "error");
+        return;
+      }
+      setStatus(status, "Saving…");
+      try {
+        const res = await fetch("/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: $("#note-title").value, content }),
+        });
+        const data = await res.json();
+        if (!res.ok) { setStatus(status, data.error || "Failed.", "error"); return; }
+        setStatus(status, `Saved “${data.title}” (${data.chunks} paragraph${data.chunks === 1 ? "" : "s"}).`, "ok");
+        $("#note-form").reset();
+        loadDocuments();
+      } catch (e) {
+        setStatus(status, "Save failed.", "error");
+      }
+    });
+
+    // ---- Upload ----
+    $("#upload-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const status = $("#upload-status");
+      const file = $("#file-input").files[0];
+      if (!file) { setStatus(status, "Choose a file first.", "error"); return; }
+      setStatus(status, "Uploading…");
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const res = await fetch("/upload", { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) { setStatus(status, data.error || "Failed.", "error"); return; }
+        setStatus(status, `Uploaded “${data.title}” (${data.chunks} paragraph${data.chunks === 1 ? "" : "s"}).`, "ok");
+        $("#upload-form").reset();
+        loadDocuments();
+      } catch (e) {
+        setStatus(status, "Upload failed.", "error");
+      }
+    });
+
+    // ---- Documents list ----
+    async function loadDocuments() {
+      const box = $("#documents");
+      try {
+        const res = await fetch("/documents");
+        const data = await res.json();
+        if (!data.documents.length) {
+          box.innerHTML = '<p class="muted">No documents yet. Add a note or upload a file.</p>';
+          return;
+        }
+        box.innerHTML = data.documents.map((d) => `
+          <div class="doc-row">
+            <span class="badge badge-${escapeHtml(d.source_type)}">${escapeHtml(d.source_type)}</span>
+            <span class="doc-title">${escapeHtml(d.title)}</span>
+            <span class="doc-count">${d.chunk_count} ¶</span>
+            <button class="delete-btn" data-id="${d.id}" title="Delete">✕</button>
+          </div>
+        `).join("");
+        box.querySelectorAll(".delete-btn").forEach((btn) => {
+          btn.addEventListener("click", () => deleteDocument(btn.dataset.id));
+        });
+      } catch (e) {
+        box.innerHTML = '<p class="status error">Could not load documents.</p>';
+      }
+    }
+
+    async function deleteDocument(id) {
+      if (!confirm("Delete this document and all its paragraphs?")) return;
+      try {
+        await fetch("/delete/" + id, { method: "POST" });
+        loadDocuments();
+        // Refresh results so deleted content disappears from view.
+        runSearch($("#search-input").value);
+      } catch (e) {
+        alert("Delete failed.");
+      }
+    }
+
+    loadDocuments();
+  </script>
+</body>
+</html>
