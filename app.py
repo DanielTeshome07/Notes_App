@@ -31,9 +31,11 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     session,
     url_for,
 )
+from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -111,6 +113,12 @@ def init_db():
         # Tags are stored sentinel-wrapped (",a,b,") so a tag filter can match
         # exactly with LIKE '%,tag,%' without partial-word false positives.
         db.execute("ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT ','")
+
+    # Migration: the editor stores the raw, exact text as the source of truth.
+    # Chunks remain a derived search index. Rows created before this column
+    # existed have content = NULL and fall back to reconstructing from chunks.
+    if "content" not in cols:
+        db.execute("ALTER TABLE documents ADD COLUMN content TEXT")
 
     db.commit()
     db.close()
@@ -226,19 +234,10 @@ def extract_txt(data):
     return data.decode("utf-8", errors="replace")
 
 
-def store_document(title, source_type, paragraphs, tags):
-    """Insert a document and its paragraph chunks. Returns the new doc id."""
-    db = get_db()
-    cur = db.execute(
-        "INSERT INTO documents (title, source_type, created_at, tags) VALUES (?, ?, ?, ?)",
-        (
-            title,
-            source_type,
-            datetime.utcnow().isoformat(timespec="seconds"),
-            pack_tags(tags),
-        ),
-    )
-    doc_id = cur.lastrowid
+def _index_chunks(db, doc_id, paragraphs):
+    """(Re)build the chunk + FTS rows for a document. Caller commits."""
+    db.execute("DELETE FROM chunks_fts WHERE doc_id = ?", (doc_id,))
+    db.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
     for index, content in enumerate(paragraphs):
         db.execute(
             "INSERT INTO chunks (doc_id, content, chunk_index) VALUES (?, ?, ?)",
@@ -248,8 +247,97 @@ def store_document(title, source_type, paragraphs, tags):
             "INSERT INTO chunks_fts (content, doc_id, chunk_index) VALUES (?, ?, ?)",
             (content, doc_id, index),
         )
+
+
+def store_document(title, source_type, content, paragraphs, tags):
+    """Insert a document, its raw content, and its paragraph chunks.
+
+    `content` is the verbatim source of truth (preserves line breaks);
+    `paragraphs` is the derived, whitespace-collapsed search index.
+    Returns the new doc id.
+    """
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO documents (title, source_type, created_at, tags, content) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            title,
+            source_type,
+            datetime.utcnow().isoformat(timespec="seconds"),
+            pack_tags(tags),
+            content,
+        ),
+    )
+    doc_id = cur.lastrowid
+    _index_chunks(db, doc_id, paragraphs)
     db.commit()
     return doc_id
+
+
+def update_document(doc_id, title, content, paragraphs, tags):
+    """Overwrite a document's title/content/tags and rebuild its search index.
+
+    Leaves created_at and source_type untouched.
+    """
+    db = get_db()
+    db.execute(
+        "UPDATE documents SET title = ?, content = ?, tags = ? WHERE id = ?",
+        (title, content, pack_tags(tags), doc_id),
+    )
+    _index_chunks(db, doc_id, paragraphs)
+    db.commit()
+
+
+def document_content(row):
+    """Return a document's full text.
+
+    Prefers the verbatim `content` column; falls back to reconstructing from
+    chunks for rows created before that column existed.
+    """
+    if row["content"] is not None:
+        return row["content"]
+    db = get_db()
+    chunks = db.execute(
+        "SELECT content FROM chunks WHERE doc_id = ? ORDER BY chunk_index",
+        (row["id"],),
+    ).fetchall()
+    return "\n\n".join(c["content"] for c in chunks)
+
+
+def render_pdf(title, content):
+    """Render title + content to a PDF and return the bytes (PyMuPDF Story)."""
+    body = "".join(f"<p>{escape(line)}</p>" for line in content.split("\n"))
+    html = (
+        "<html><body style='font-family:sans-serif;font-size:11pt;"
+        "line-height:1.5'>"
+        f"<h2>{escape(title)}</h2>{body}</body></html>"
+    )
+    story = fitz.Story(html=html)
+    buf = io.BytesIO()
+    writer = fitz.DocumentWriter(buf)
+    mediabox = fitz.paper_rect("a4")
+    where = mediabox + (54, 54, -54, -54)  # ~0.75in margins
+    more = 1
+    while more:
+        dev = writer.begin_page(mediabox)
+        more, _ = story.place(where)
+        story.draw(dev)
+        writer.end_page()
+    writer.close()
+    buf.seek(0)
+    return buf
+
+
+def render_docx(title, content):
+    """Render title + content to a .docx and return a BytesIO."""
+    doc = DocxDocument()
+    doc.add_heading(title, level=1)
+    for line in content.split("\n"):
+        doc.add_paragraph(line)
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
 
 
 # Rewrite the FTS3/4-style infix "A NEAR/N B" (which the README advertises and
@@ -289,7 +377,7 @@ def add_note():
         return jsonify({"error": "Note has no searchable text."}), 400
 
     tags = normalize_tags(data.get("tags"))
-    doc_id = store_document(title, "note", paragraphs, tags)
+    doc_id = store_document(title, "note", content, paragraphs, tags)
     return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags}), 201
 
 
@@ -321,7 +409,7 @@ def upload_file():
         return jsonify({"error": "No extractable text found in file."}), 400
 
     tags = normalize_tags(request.form.get("tags"))
-    doc_id = store_document(filename, ext, paragraphs, tags)
+    doc_id = store_document(filename, ext, text, paragraphs, tags)
     return jsonify({"id": doc_id, "title": filename, "chunks": len(paragraphs), "tags": tags}), 201
 
 
@@ -438,6 +526,100 @@ def list_tags():
             counts[tag] = counts.get(tag, 0) + 1
     tags = [{"tag": t, "count": c} for t, c in sorted(counts.items())]
     return jsonify({"tags": tags})
+
+
+@app.route("/document/<int:doc_id>")
+@login_required
+def get_document(doc_id):
+    """Return one document with its full, verbatim text for the editor."""
+    db = get_db()
+    row = db.execute(
+        "SELECT id, title, source_type, created_at, tags, content "
+        "FROM documents WHERE id = ?",
+        (doc_id,),
+    ).fetchone()
+    if row is None:
+        return jsonify({"error": "Document not found."}), 404
+    return jsonify(
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "source_type": row["source_type"],
+            "created_at": row["created_at"],
+            "tags": unpack_tags(row["tags"]),
+            "content": document_content(row),
+        }
+    )
+
+
+@app.route("/document/<int:doc_id>", methods=["POST", "PUT"])
+@login_required
+def save_document(doc_id):
+    """Update an existing document's title, content, and tags."""
+    db = get_db()
+    exists = db.execute("SELECT 1 FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    if not exists:
+        return jsonify({"error": "Document not found."}), 404
+
+    data = request.get_json(silent=True) or request.form
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "Document is empty."}), 400
+
+    title = (data.get("title") or "").strip()
+    if not title:
+        first_line = next(
+            (ln.strip() for ln in content.splitlines() if ln.strip()), "Untitled"
+        )
+        title = first_line[:60] + ("…" if len(first_line) > 60 else "")
+
+    paragraphs = split_paragraphs(content)
+    if not paragraphs:
+        return jsonify({"error": "Document has no searchable text."}), 400
+
+    tags = normalize_tags(data.get("tags"))
+    update_document(doc_id, title, content, paragraphs, tags)
+    return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags})
+
+
+# Renderers and MIME types per export format. PDF/DOCX build binary streams;
+# TXT is encoded inline below.
+_EXPORTERS = {
+    "pdf": ("application/pdf", render_pdf),
+    "docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        render_docx,
+    ),
+    "txt": ("text/plain; charset=utf-8", None),
+}
+
+
+@app.route("/export/<int:doc_id>/<fmt>")
+@login_required
+def export_document(doc_id, fmt):
+    """Download a document as PDF, DOCX, or TXT."""
+    if fmt not in _EXPORTERS:
+        return jsonify({"error": f"Unsupported format: {fmt}"}), 400
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id, title, content FROM documents WHERE id = ?", (doc_id,)
+    ).fetchone()
+    if row is None:
+        return jsonify({"error": "Document not found."}), 404
+
+    title = row["title"]
+    content = document_content(row)
+    mimetype, renderer = _EXPORTERS[fmt]
+    stream = io.BytesIO(content.encode("utf-8")) if renderer is None else renderer(title, content)
+
+    stem = secure_filename(os.path.splitext(title)[0]) or f"document-{doc_id}"
+    return send_file(
+        stream,
+        mimetype=mimetype,
+        as_attachment=True,
+        download_name=f"{stem}.{fmt}",
+    )
 
 
 @app.route("/delete/<int:doc_id>", methods=["POST", "DELETE"])
