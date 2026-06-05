@@ -18,10 +18,13 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 ## Features
 
 - **Add text notes** — paste anything directly into the app
-- **Upload files** — PDF, DOCX, TXT supported
+- **Upload files** — PDF, DOCX, TXT supported (drag-and-drop or click)
 - **Paragraph-level search** — finds the exact section of a document, not just the file name
 - **Phrase search** — search `"exact phrase"` to match words in order
 - **Highlighted results** — matching words are highlighted in the result snippet
+- **Tags / collections** — label documents, then filter search and the list by tag
+- **Dark mode** — toggle that remembers your choice and respects your system preference
+- **Password protection** — optional single-password gate so it can run on the internet for just you
 - **Delete documents** — remove notes or files you no longer need
 
 ## Tech Stack
@@ -38,14 +41,21 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 
 ```
 notes-app/
-├── app.py              # Flask app: routes, database setup, file parsing
+├── app.py              # Flask app: routes, auth, database setup, file parsing
 ├── requirements.txt    # Python dependencies
+├── Dockerfile          # Container image (gunicorn)
+├── .dockerignore
 ├── .gitignore
 ├── README.md
 ├── templates/
-│   └── index.html      # Single-page UI (search bar, upload, results)
-└── static/
-    └── style.css       # Minimal styling
+│   ├── index.html      # Single-page UI (search bar, upload, results)
+│   └── login.html      # Password gate
+├── static/
+│   └── style.css       # Styling (light + dark)
+└── deploy/             # k3s + Cloudflare manifests and deploy guide
+    ├── noteapp.yaml
+    ├── secret.example.yaml
+    └── README.md
 ```
 
 ## Database Design
@@ -83,6 +93,32 @@ python app.py
 
 Then open `http://localhost:5000` in your browser.
 
+### Configuration (environment variables)
+
+All optional — with none set, the app runs locally with no password (as before).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `APP_PASSWORD` | _(unset)_ | If set, every route is gated behind this password. Unset = no auth (local use). |
+| `FLASK_SECRET_KEY` | random | Signs the login session. Set a fixed value so logins survive restarts. |
+| `DATA_DIR` | app dir | Where `notes.db` lives (a mounted volume in production). |
+| `MAX_UPLOAD_MB` | `32` | Maximum upload size. |
+| `FLASK_DEBUG` | off | `1` enables the dev debugger — never in production. |
+
+For production, run under a real server instead of the Flask dev server:
+
+```bash
+APP_PASSWORD='your-password' FLASK_SECRET_KEY="$(openssl rand -hex 32)" \
+  gunicorn -b 0.0.0.0:5000 -w 1 app:app
+```
+
+## Deploying to the internet
+
+The app is containerized and ships with k3s manifests to run it privately
+(password-gated, HTTPS) behind Traefik + Cloudflare at your own subdomain. See
+[`deploy/README.md`](deploy/README.md) for the full build → push → apply → DNS
+walkthrough.
+
 ## Search Tips
 
 | Query | What it finds |
@@ -94,8 +130,9 @@ Then open `http://localhost:5000` in your browser.
 
 ## Roadmap
 
-- [ ] Tag/label documents for grouping
+- [x] Tag/label documents for grouping
+- [x] Dark mode
+- [x] Drag-and-drop file upload
+- [x] Password protection + deploy to k3s/Cloudflare
 - [ ] Export search results
-- [ ] Dark mode
-- [ ] Drag-and-drop file upload
 - [ ] Folder/collection support

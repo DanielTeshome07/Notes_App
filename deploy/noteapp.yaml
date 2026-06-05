@@ -1,0 +1,127 @@
+# Notes App — cluster resources (everything except the Secret, which holds the
+# password and is created out-of-band; see deploy/README.md).
+#
+#   namespace -> PVC -> Deployment (1 replica) -> Service -> Ingress
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: noteapp
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: noteapp-data
+  namespace: noteapp
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noteapp
+  namespace: noteapp
+  labels:
+    app: noteapp
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the SQLite DB lives on a single ReadWriteOnce
+  # volume that only one pod may mount, and only one writer is safe.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: noteapp
+  template:
+    metadata:
+      labels:
+        app: noteapp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001          # makes the local-path volume writable by the app user
+      containers:
+        - name: noteapp
+          image: danieltesh/noteapp:latest   # override with your tag at deploy time
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: MAX_UPLOAD_MB
+              value: "32"
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: noteapp-secret
+                  key: app-password
+            - name: FLASK_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: noteapp-secret
+                  key: flask-secret-key
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: noteapp-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: noteapp
+  namespace: noteapp
+spec:
+  selector:
+    app: noteapp
+  ports:
+    - port: 80
+      targetPort: 5000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: noteapp
+  namespace: noteapp
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik-external
+  rules:
+    - host: note.danielteshome.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: noteapp
+                port:
+                  number: 80
