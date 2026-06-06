@@ -89,49 +89,40 @@ curl -s -o /dev/null -w '%{http_code}\n' https://note.danielteshome.dev/healthz 
 
 Then open **https://note.danielteshome.dev** — you'll get the password page.
 
-## CI/CD (GitHub Actions)
+## CI (GitHub Actions) + manual deploy
 
-Steps 1 and 3 above are automated by
-[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml): **every push
-to `main` builds + pushes `danieltesh/noteapp:<short-sha>` and rolls the
-Deployment over to it, then checks `/healthz`.** Steps 2 (secret) and 4 (tunnel +
-DNS) are one-time and stay manual.
+CI is split from CD because the k3s API is **not** exposed publicly, so a
+GitHub-hosted runner can't reach the cluster:
 
-Because the k3s API is not exposed publicly, the workflow runs on a **self-hosted
-runner installed on `pop-os`** — it uses the box's local `docker` and `kubectl`,
-so nothing about the cluster has to be reachable from GitHub.
+- **CI builds + pushes the image** — [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
+  runs on a GitHub-hosted runner (`ubuntu-latest`) on every push to `main` (and
+  via **Run workflow**), building and pushing
+  `danieltesh/noteapp:<short-sha>` and `:latest` to Docker Hub. This is step 1
+  above, automated. No self-hosted runner needed.
+- **Deploy stays manual on the cluster box** — because only this machine can
+  reach the cluster, run step 3 here to roll the new tag out:
 
-### One-time runner setup
+  ```bash
+  TAG=$(git rev-parse --short origin/main)
+  kubectl -n noteapp set image deploy/noteapp noteapp=danieltesh/noteapp:$TAG
+  kubectl -n noteapp rollout status deploy/noteapp
+  curl -s -o /dev/null -w '%{http_code}\n' https://note.danielteshome.dev/healthz   # expect 200
+  ```
 
-1. **Register the runner** (GitHub → repo **Settings → Actions → Runners → New
-   self-hosted runner**, Linux x64). Follow the `./config.sh` instructions, then
-   install it as a service so it survives reboots:
+Steps 2 (secret) and 4 (tunnel + DNS) are one-time and stay manual.
 
-   ```bash
-   sudo ./svc.sh install
-   sudo ./svc.sh start
-   ```
+### One-time CI setup
 
-2. **Give the runner user docker + kubectl access.** The runner runs as whatever
-   user installed the service. That user needs:
-   - membership in the `docker` group (`sudo usermod -aG docker <user>`), and
-   - a working kubeconfig. For k3s, copy it so the runner user owns it:
+Add the Docker Hub secrets (GitHub → repo **Settings → Secrets and variables →
+Actions**) so the build can push:
 
-     ```bash
-     mkdir -p ~/.kube
-     sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-     sudo chown $(id -u):$(id -g) ~/.kube/config
-     # confirm:
-     kubectl -n noteapp get deploy/noteapp
-     ```
+- `DOCKERHUB_USERNAME` — your Docker Hub user (`danieltesh`)
+- `DOCKERHUB_TOKEN` — a Docker Hub access token (Account Settings → Security)
 
-3. **Add the Docker Hub secrets** (GitHub → repo **Settings → Secrets and
-   variables → Actions**):
-   - `DOCKERHUB_USERNAME` — your Docker Hub user (`danieltesh`)
-   - `DOCKERHUB_TOKEN` — a Docker Hub access token (Account Settings → Security)
-
-That's it — push to `main` and watch it in the repo's **Actions** tab. To deploy
-without a code change, use **Run workflow** (`workflow_dispatch`) on that page.
+> **Want CI to deploy too?** Install a self-hosted runner on `pop-os` (it has
+> local `docker` + `kubectl`), then add a second job to the workflow that runs
+> `kubectl set image` on `runs-on: self-hosted`. That removes the manual deploy
+> step but requires keeping a runner registered.
 
 ## Operations
 

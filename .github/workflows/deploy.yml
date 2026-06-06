@@ -1,33 +1,30 @@
-name: Deploy Notes App
+name: Build & Push image
 
-# Push to main = update the website. Runs entirely on a self-hosted runner that
-# lives on the cluster machine (pop-os), so it has local docker + kubectl and the
-# k3s API never has to be exposed. See deploy/README.md ("CI/CD") for runner setup.
+# Build and push the container image on every push to main, on GitHub-hosted
+# runners. Deploy is intentionally NOT done here: the k3s cluster's API isn't
+# public, so a hosted runner can't reach it. Rolling the new image out happens
+# on the cluster box — see deploy/README.md ("Deploying").
 on:
   push:
     branches: [main]
   workflow_dispatch: {}
 
-# The app is a single replica writing one ReadWriteOnce SQLite volume, and the
-# Deployment uses strategy: Recreate. Never let two deploys overlap.
-concurrency:
-  group: deploy-noteapp
-  cancel-in-progress: false
-
 jobs:
-  deploy:
-    runs-on: self-hosted
+  build:
+    runs-on: ubuntu-latest
     env:
       IMAGE: danieltesh/noteapp
-      NAMESPACE: noteapp
     steps:
       - name: Check out code
         uses: actions/checkout@v4
 
       - name: Compute image tag
         id: tag
-        # Short SHA (7 chars) — same immutable tag the manual flow uses.
+        # Short SHA (7 chars) — the immutable tag the deploy step rolls out.
         run: echo "sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -35,24 +32,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & push image
-        run: |
-          docker build \
-            -t "$IMAGE:${{ steps.tag.outputs.sha }}" \
-            -t "$IMAGE:latest" .
-          docker push "$IMAGE:${{ steps.tag.outputs.sha }}"
-          docker push "$IMAGE:latest"
-
-      - name: Deploy to k3s
-        run: |
-          kubectl -n "$NAMESPACE" set image \
-            deploy/noteapp noteapp="$IMAGE:${{ steps.tag.outputs.sha }}"
-          kubectl -n "$NAMESPACE" rollout status deploy/noteapp --timeout=120s
-
-      - name: Verify health
-        # The runner is on the cluster host, so it can hit the pinned NodePort
-        # the cloudflared tunnel forwards note.danielteshome.dev to.
-        run: |
-          code=$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:30568/healthz)
-          echo "healthz returned $code"
-          test "$code" = "200"
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

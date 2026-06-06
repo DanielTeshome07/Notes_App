@@ -147,6 +147,6 @@ walkthrough.
 - [x] Password protection + deploy to k3s/Cloudflare
 - [x] Rich editor with Markdown formatting toolbar
 - [x] Export documents to PDF and Word
-- [x] CI/CD pipeline — push to `main` auto-builds + deploys ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml))
+- [x] CI pipeline — push to `main` auto-builds + pushes the image ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)); deploy is a manual `kubectl set image` on the cluster box
 - [x] Library view — home groups documents into shelves by category (tag)
 - [ ] Hierarchical folders / nested collections
