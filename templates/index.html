@@ -16,13 +16,14 @@
   </script>
 </head>
 <body>
-  <header>
-    <div class="header-bar">
-      <div class="brand">
-        <h1>📒 Notes</h1>
-        <p class="tagline">Search everything down to the paragraph.</p>
-      </div>
-      <div class="header-actions">
+  <header class="appbar">
+    <div class="appbar-inner">
+      <a class="brand" href="{{ url_for('index') }}">
+        <span class="brand-mark">📒</span>
+        <span class="brand-text">Notes</span>
+      </a>
+      <div class="appbar-actions">
+        <a href="{{ url_for('editor_page') }}" class="btn-primary">✏️ New document</a>
         <button id="theme-toggle" class="icon-btn" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
         <form method="POST" action="{{ url_for('logout') }}" id="logout-form">
           <button type="submit" class="icon-btn" title="Sign out" aria-label="Sign out">⎋</button>
@@ -32,10 +33,11 @@
   </header>
 
   <main>
-    <!-- Search -->
-    <section class="card search-card">
-      <form id="search-form" autocomplete="off">
-        <input type="search" id="search-input" placeholder="Search your notes and documents…" aria-label="Search">
+    <!-- Search hero -->
+    <section class="search-hero">
+      <form id="search-form" class="search-box" autocomplete="off">
+        <span class="search-icon" aria-hidden="true">🔍</span>
+        <input type="search" id="search-input" placeholder="Search everything, down to the paragraph…" aria-label="Search">
         <button type="submit">Search</button>
       </form>
       <p class="hint">
@@ -47,38 +49,39 @@
       <div id="results"></div>
     </section>
 
-    <div class="columns">
-      <!-- Add note -->
-      <section class="card">
-        <h2>Add a note</h2>
-        <form id="note-form">
+    <!-- Quick capture -->
+    <div class="capture-grid">
+      <section class="panel">
+        <div class="panel-head"><h2>📝 Quick note</h2></div>
+        <form id="note-form" class="panel-body">
           <input type="text" id="note-title" placeholder="Title (optional)">
-          <textarea id="note-content" rows="6" placeholder="Paste or type anything… separate paragraphs with a blank line."></textarea>
+          <textarea id="note-content" rows="5" placeholder="Paste or type anything… separate paragraphs with a blank line."></textarea>
           <input type="text" id="note-tags" placeholder="Tags (comma separated, optional)">
           <button type="submit">Save note</button>
         </form>
       </section>
 
-      <!-- Upload -->
-      <section class="card">
-        <h2>Upload a file</h2>
-        <div id="dropzone" class="dropzone">
-          <p class="dropzone-text">Drag &amp; drop a file here, or click to choose</p>
-          <p class="hint">PDF, DOCX, or TXT</p>
-          <input type="file" id="file-input" accept=".pdf,.docx,.txt" multiple hidden>
+      <section class="panel">
+        <div class="panel-head"><h2>📎 Upload a file</h2></div>
+        <div class="panel-body upload-body">
+          <div id="dropzone" class="dropzone">
+            <span class="dz-icon" aria-hidden="true">⬆️</span>
+            <p class="dropzone-text">Drag &amp; drop, or click to choose</p>
+            <p class="hint">PDF, DOCX, or TXT</p>
+            <input type="file" id="file-input" accept=".pdf,.docx,.txt" multiple hidden>
+          </div>
+          <input type="text" id="upload-tags" placeholder="Tags for upload (comma separated, optional)">
         </div>
-        <input type="text" id="upload-tags" placeholder="Tags for upload (comma separated, optional)">
       </section>
     </div>
 
     <!-- Documents -->
-    <section class="card">
+    <section class="docs-section">
       <div class="section-head">
         <h2>Your documents</h2>
-        <a href="{{ url_for('editor_page') }}" class="btn-link">＋ New file</a>
+        <span id="doc-count" class="count-pill"></span>
       </div>
-      <p id="doc-count" class="muted" style="margin:0 0 0.4rem"></p>
-      <div id="documents"><p class="muted">Loading…</p></div>
+      <div id="documents" class="docs-grid"><p class="muted">Loading…</p></div>
     </section>
   </main>
 
@@ -271,22 +274,38 @@
         $("#doc-count").textContent = docs.length
           ? `${docs.length} document${docs.length === 1 ? "" : "s"}` : "";
         if (!docs.length) {
+          box.className = "docs-empty";
           box.innerHTML = activeTag
             ? `<p class="muted">No documents tagged #${escapeHtml(activeTag)}.</p>`
-            : '<p class="muted">No documents yet. Add a note or upload a file to get started.</p>';
+            : '<p class="muted">Nothing here yet. Create a document, jot a quick note, or upload a file to get started.</p>';
           return;
         }
+        box.className = "docs-grid";
         box.innerHTML = docs.map((d) => `
-          <div class="doc-row">
-            <span class="badge badge-${escapeHtml(d.source_type)}">${escapeHtml(d.source_type)}</span>
-            <a class="doc-title-btn" href="/editor/${d.id}" title="Open in editor">${escapeHtml(d.title)}</a>
-            ${tagsHtml(d.tags)}
-            <span class="doc-count">${d.chunk_count} ¶</span>
-            <button class="delete-btn" data-id="${d.id}" title="Delete">✕</button>
+          <div class="doc-card" data-open="${d.id}" role="link" tabindex="0" title="Open in editor">
+            <div class="doc-card-head">
+              <span class="badge badge-${escapeHtml(d.source_type)}">${escapeHtml(d.source_type)}</span>
+              <button class="doc-del" data-id="${d.id}" title="Delete" aria-label="Delete">✕</button>
+            </div>
+            <h3 class="doc-card-title">${escapeHtml(d.title)}</h3>
+            <div class="doc-card-foot">
+              ${tagsHtml(d.tags)}
+              <span class="doc-card-count">${d.chunk_count} ¶</span>
+            </div>
           </div>
         `).join("");
-        box.querySelectorAll(".delete-btn").forEach((btn) =>
-          btn.addEventListener("click", () => deleteDocument(btn.dataset.id)));
+        box.querySelectorAll(".doc-card").forEach((card) => {
+          const open = () => { window.location = "/editor/" + card.dataset.open; };
+          card.addEventListener("click", (e) => {
+            if (e.target.closest(".doc-del") || e.target.closest(".tag")) return;
+            open();
+          });
+          card.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && e.target === card) open();
+          });
+        });
+        box.querySelectorAll(".doc-del").forEach((btn) =>
+          btn.addEventListener("click", (e) => { e.stopPropagation(); deleteDocument(btn.dataset.id); }));
       } catch (e) {
         if (e.message !== "unauthorized") box.innerHTML = '<p class="status error">Could not load documents.</p>';
       }
