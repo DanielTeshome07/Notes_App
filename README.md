@@ -26,6 +26,7 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 - **Phrase search** — search `"exact phrase"` to match words in order
 - **Highlighted results** — matching words are highlighted in the result snippet
 - **Tags / collections** — label documents, then filter search and the list by tag
+- **Library view** — the home page groups your documents into shelves by category (tag), like science, language, history, coding. A document with several tags appears on each shelf; untagged ones land on an "Uncategorized" shelf. Click a shelf heading to filter down to it
 - **Dark mode** — toggle that remembers your choice and respects your system preference
 - **Password protection** — optional single-password gate so it can run on the internet for just you
 - **Delete documents** — remove notes or files you no longer need
@@ -147,4 +148,5 @@ walkthrough.
 - [x] Rich editor with Markdown formatting toolbar
 - [x] Export documents to PDF and Word
 - [x] CI/CD pipeline — push to `main` auto-builds + deploys ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml))
-- [ ] Folder/collection support
+- [x] Library view — home groups documents into shelves by category (tag)
+- [ ] Hierarchical folders / nested collections
