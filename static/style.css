@@ -1,11 +1,27 @@
+/* Self-hosted Inter (variable) — no CDN dependency */
+@font-face {
+  font-family: "InterVariable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/InterVariable.woff2") format("woff2");
+}
+@font-face {
+  font-family: "InterVariable";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/InterVariable-Italic.woff2") format("woff2");
+}
+
 :root {
   --bg: #f6f7f9;
   --card: #ffffff;
   --ink: #1f2430;
   --muted: #8a93a3;
-  --line: #e4e8ef;
-  --accent: #3b6ef0;
-  --accent-soft: #e8efff;
+  --line: #e6e8f0;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
   --mark: #fff2a8;
   --mark-ink: #3a2f00;
   --ok: #1a7f4b;
@@ -14,7 +30,8 @@
   --chip: #eceff4;
   --chip-ink: #56607a;
   --radius: 12px;
-  --shadow: 0 1px 2px rgba(20, 30, 60, 0.04);
+  --shadow: 0 1px 3px rgba(24, 28, 50, 0.05), 0 8px 24px rgba(24, 28, 50, 0.045);
+  --bg-glow: rgba(79, 70, 229, 0.06);
   /* Editor "desk + A4 sheet". Paper stays white in both themes. */
   --canvas: #e4e7ee;
   --canvas-2: #eef1f7;   /* lighter top of the desk gradient */
@@ -31,8 +48,8 @@
   --ink: #e7ebf2;
   --muted: #8b95a7;
   --line: #2a313d;
-  --accent: #5b86f5;
-  --accent-soft: #1e2a44;
+  --accent: #818cf8;
+  --accent-soft: #232649;
   --mark: #6b5e1f;
   --mark-ink: #fff6cf;
   --ok: #3fb87a;
@@ -40,7 +57,8 @@
   --field: #11161e;
   --chip: #242b36;
   --chip-ink: #aeb8c9;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.3);
+  --bg-glow: rgba(129, 140, 248, 0.1);
   /* A darker "desk" so the white sheet reads as paper; paper itself unchanged. */
   --canvas: #0a0d12;
   --canvas-2: #141922;
@@ -51,10 +69,16 @@
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background: var(--bg);
+  font-family: "InterVariable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-feature-settings: "cv05" 1, "ss03" 1;
+  letter-spacing: -0.011em;
+  background-color: var(--bg);
+  background-image: radial-gradient(1000px 440px at 50% -180px, var(--bg-glow), transparent 70%);
+  background-attachment: fixed;
   color: var(--ink);
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   transition: background 0.2s ease, color 0.2s ease;
 }
 
