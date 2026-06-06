@@ -89,6 +89,50 @@ curl -s -o /dev/null -w '%{http_code}\n' https://note.danielteshome.dev/healthz 
 
 Then open **https://note.danielteshome.dev** — you'll get the password page.
 
+## CI/CD (GitHub Actions)
+
+Steps 1 and 3 above are automated by
+[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml): **every push
+to `main` builds + pushes `danieltesh/noteapp:<short-sha>` and rolls the
+Deployment over to it, then checks `/healthz`.** Steps 2 (secret) and 4 (tunnel +
+DNS) are one-time and stay manual.
+
+Because the k3s API is not exposed publicly, the workflow runs on a **self-hosted
+runner installed on `pop-os`** — it uses the box's local `docker` and `kubectl`,
+so nothing about the cluster has to be reachable from GitHub.
+
+### One-time runner setup
+
+1. **Register the runner** (GitHub → repo **Settings → Actions → Runners → New
+   self-hosted runner**, Linux x64). Follow the `./config.sh` instructions, then
+   install it as a service so it survives reboots:
+
+   ```bash
+   sudo ./svc.sh install
+   sudo ./svc.sh start
+   ```
+
+2. **Give the runner user docker + kubectl access.** The runner runs as whatever
+   user installed the service. That user needs:
+   - membership in the `docker` group (`sudo usermod -aG docker <user>`), and
+   - a working kubeconfig. For k3s, copy it so the runner user owns it:
+
+     ```bash
+     mkdir -p ~/.kube
+     sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+     sudo chown $(id -u):$(id -g) ~/.kube/config
+     # confirm:
+     kubectl -n noteapp get deploy/noteapp
+     ```
+
+3. **Add the Docker Hub secrets** (GitHub → repo **Settings → Secrets and
+   variables → Actions**):
+   - `DOCKERHUB_USERNAME` — your Docker Hub user (`danieltesh`)
+   - `DOCKERHUB_TOKEN` — a Docker Hub access token (Account Settings → Security)
+
+That's it — push to `main` and watch it in the repo's **Actions** tab. To deploy
+without a code change, use **Run workflow** (`workflow_dispatch`) on that page.
+
 ## Operations
 
 ```bash

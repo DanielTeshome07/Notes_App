@@ -10,19 +10,23 @@ You have notes scattered across files. You remember a phrase or idea but can't f
 
 1. Run `python app.py`
 2. Open your browser at `http://localhost:5000`
-3. Add notes by typing/pasting, or upload a PDF/Word/text file
+3. Write a note in the editor (with a Markdown formatting toolbar), or upload a PDF/Word/text file
 4. Search for any word or phrase — results show the exact matching paragraph, highlighted, with the source document name
+5. Open any document to read, edit, or export it as PDF or Word
 
 Everything is stored locally in a SQLite database (`notes.db`). No account, no internet, no cloud.
 
 ## Features
 
-- **Add text notes** — paste anything directly into the app
+- **Rich editor** — a full-page, Docs-style writing surface with a Markdown formatting toolbar (headings, bold/italic, lists, links, code), live preview, autosave, a word-count status bar, and a distraction-free focus mode
 - **Upload files** — PDF, DOCX, TXT supported (drag-and-drop or click)
+- **Per-document format tracking** — typed notes can be Markdown; uploaded and plain docs stay verbatim. A single Markdown→HTML engine drives the preview, print view, and both exports so they always match
+- **Export to PDF & Word** — download any document as a `.pdf` or `.docx`
 - **Paragraph-level search** — finds the exact section of a document, not just the file name
 - **Phrase search** — search `"exact phrase"` to match words in order
 - **Highlighted results** — matching words are highlighted in the result snippet
 - **Tags / collections** — label documents, then filter search and the list by tag
+- **Library view** — the home page groups your documents into shelves by category (tag), like science, language, history, coding. A document with several tags appears on each shelf; untagged ones land on an "Uncategorized" shelf. Click a shelf heading to filter down to it
 - **Dark mode** — toggle that remembers your choice and respects your system preference
 - **Password protection** — optional single-password gate so it can run on the internet for just you
 - **Delete documents** — remove notes or files you no longer need
@@ -33,9 +37,11 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 |-------|-----------|-----|
 | Backend | Python + Flask | Simple, minimal, runs locally |
 | Search | SQLite FTS5 | Built into Python's sqlite3 — no extra install, fast phrase search |
-| PDF parsing | PyMuPDF (`fitz`) | Accurate text + layout extraction from PDFs |
-| DOCX parsing | python-docx | Extracts text from Word documents |
+| PDF parsing & export | PyMuPDF (`fitz`) | Accurate text extraction from PDFs, and rendering documents back out to PDF |
+| DOCX parsing & export | python-docx | Reads and writes Word documents |
+| Markdown | `Markdown` | Renders notes to HTML for preview, print, and exports |
 | Frontend | Plain HTML/CSS/JS | No framework needed — fast and simple |
+| Fonts | Self-hosted Inter | Bundled `.woff2` files — no external CDN call |
 
 ## Project Structure
 
@@ -48,10 +54,12 @@ notes-app/
 ├── .gitignore
 ├── README.md
 ├── templates/
-│   ├── index.html      # Single-page UI (search bar, upload, results)
+│   ├── index.html      # Home: app bar, search, upload, document grid
+│   ├── editor.html     # Full-page editor: Markdown toolbar, preview, autosave
 │   └── login.html      # Password gate
 ├── static/
-│   └── style.css       # Styling (light + dark)
+│   ├── style.css       # Styling (light + dark)
+│   └── fonts/          # Self-hosted Inter (.woff2)
 └── deploy/             # k3s + Cloudflare manifests and deploy guide
     ├── noteapp.yaml
     ├── secret.example.yaml
@@ -68,6 +76,9 @@ documents
   title       TEXT          -- file name or first line of note
   source_type TEXT          -- 'note', 'pdf', 'docx', 'txt'
   created_at  TIMESTAMP
+  content     TEXT          -- full document text (for editing and export)
+  tags        TEXT          -- packed tag list
+  format      TEXT          -- 'plain' or 'markdown' (how content renders/exports)
 
 chunks
   id          INTEGER PRIMARY KEY
@@ -134,5 +145,8 @@ walkthrough.
 - [x] Dark mode
 - [x] Drag-and-drop file upload
 - [x] Password protection + deploy to k3s/Cloudflare
-- [ ] Export search results
-- [ ] Folder/collection support
+- [x] Rich editor with Markdown formatting toolbar
+- [x] Export documents to PDF and Word
+- [x] CI/CD pipeline — push to `main` auto-builds + deploys ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml))
+- [x] Library view — home groups documents into shelves by category (tag)
+- [ ] Hierarchical folders / nested collections
