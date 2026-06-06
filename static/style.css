@@ -16,7 +16,8 @@
   --radius: 12px;
   --shadow: 0 1px 2px rgba(20, 30, 60, 0.04);
   /* Editor "desk + A4 sheet". Paper stays white in both themes. */
-  --canvas: #e6e9ef;
+  --canvas: #e4e7ee;
+  --canvas-2: #eef1f7;   /* lighter top of the desk gradient */
   --paper: #ffffff;
   --paper-ink: #1b1b1b;
   --paper-edge: #e2e6ee;
@@ -42,6 +43,7 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   /* A darker "desk" so the white sheet reads as paper; paper itself unchanged. */
   --canvas: #0a0d12;
+  --canvas-2: #141922;
   --paper-edge: #d8dce4;
 }
 
@@ -284,19 +286,33 @@ body.editor-page {
   height: 100vh; display: flex; flex-direction: column; overflow: hidden;
   background: var(--bg);
 }
-.writing-top {
-  display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.6rem 1.1rem; flex: none;
+/* Docs-style top toolbar */
+.doc-toolbar {
+  display: flex; align-items: center; gap: 0.35rem;
+  padding: 0.5rem 0.9rem; flex: none;
+  background: var(--card); border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); z-index: 5;
 }
-.writing-top .icon-btn { text-decoration: none; }
-.writing-top .grow { flex: 1; }
+.doc-toolbar .icon-btn { text-decoration: none; flex: none; }
+.doc-toolbar .grow { flex: 1; }
+.tbar-div { width: 1px; height: 22px; background: var(--line); margin: 0 0.3rem; flex: none; }
+.tbtn {
+  background: transparent; color: var(--chip-ink); border: none;
+  padding: 0.42rem 0.62rem; border-radius: 7px; font-size: 0.82rem; font-weight: 600;
+  white-space: nowrap;
+}
+.tbtn:hover { filter: none; background: var(--chip); color: var(--ink); }
+.tbtn-primary {
+  background: var(--accent); color: #fff; border: none;
+  padding: 0.46rem 1.05rem; border-radius: 7px; font-size: 0.85rem; font-weight: 700;
+}
 
-/* A4 sheet centered on a themed canvas; the sheet grows with its content. */
+/* A4 sheet centered on a gradient "desk"; the sheet grows with its content. */
 .writing-scroll {
   flex: 1; overflow-y: auto;
   display: flex; flex-direction: column; align-items: center;  /* centers the sheet */
-  background: var(--canvas);
-  padding: 2.5rem 1rem 6rem;   /* top/bottom gaps; bottom clears the floating bar */
+  background: linear-gradient(180deg, var(--canvas-2), var(--canvas) 60%);
+  padding: 2.6rem 1rem 3rem;
 }
 .paper {
   /* Real A4: 21cm × 29.7cm with ~2.5cm document margins. */
@@ -307,7 +323,7 @@ body.editor-page {
   color: var(--paper-ink);
   border: 1px solid var(--paper-edge);
   border-radius: 2px;
-  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 14px 40px rgba(0, 0, 0, 0.2);
   /* White sheet + a faint guide line at every A4 page boundary (29.7cm),
      so a multi-page document reads like stacked sheets. */
   background-color: var(--paper);
@@ -347,34 +363,36 @@ body.editor-page {
 .paper .doc-tags-field::placeholder,
 .paper .doc-body::placeholder { color: var(--paper-muted); opacity: 0.8; }
 
-/* Floating action bar, pinned to the bottom-right corner */
-.fab-bar {
-  position: fixed; right: 1.4rem; bottom: 1.4rem; z-index: 40;
-  display: flex; align-items: center; gap: 0.2rem;
-  background: var(--card); border: 1px solid var(--line);
-  border-radius: 999px; padding: 0.35rem 0.45rem;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+/* Bottom status bar: save state on the left, live counts on the right */
+.doc-statusbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.4rem 1.1rem; flex: none;
+  background: var(--card); border-top: 1px solid var(--line);
+  font-size: 0.78rem; color: var(--muted);
 }
-.fab-ghost {
-  background: transparent; color: var(--chip-ink); border: none;
-  padding: 0.4rem 0.6rem; border-radius: 999px; font-size: 0.82rem; font-weight: 600;
+.save-state { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
+.save-state.saving { color: var(--muted); }
+.save-state.saved { color: var(--ok); }
+.save-state.dirty { color: var(--accent); }
+.doc-counts { white-space: nowrap; }
+
+/* Focus mode: hide chrome, calm the desk, keep the caret line centered */
+body.focus .doc-toolbar,
+body.focus .doc-statusbar { display: none; }
+body.focus .writing-scroll { background: var(--canvas); padding-top: 18vh; padding-bottom: 40vh; }
+.focus-exit {
+  position: fixed; top: 0.9rem; right: 1rem; z-index: 60; display: none;
+  background: var(--card); color: var(--muted); border: 1px solid var(--line);
 }
-.fab-ghost:hover { filter: none; background: var(--chip); color: var(--ink); }
-.fab-divider { width: 1px; height: 22px; background: var(--line); margin: 0 0.3rem; }
-.fab-save {
-  background: var(--accent); color: #fff; border: none;
-  padding: 0.45rem 1.15rem; border-radius: 999px; font-size: 0.88rem; font-weight: 700;
-}
-.ed-status { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
-.ed-status.dirty { color: var(--accent); }
-.ed-status.saved { color: var(--ok); }
+body.focus .focus-exit { display: inline-flex; }
+
 @media (max-width: 820px) {
   /* Below A4 width, let the sheet fill the screen with tighter margins. */
-  .writing-scroll { padding: 0.6rem 0.6rem 6rem; }
+  .writing-scroll { padding: 0.6rem 0.6rem 2rem; }
   .paper { padding: 1.6rem 1.3rem; min-height: 80vh; border-radius: 0; }
   .paper .doc-body { min-height: 60vh; }
-  .fab-bar { right: 0.8rem; bottom: 0.8rem; }
-  .fab-ghost { padding: 0.4rem 0.5rem; }
+  .doc-toolbar { gap: 0.2rem; padding: 0.45rem 0.6rem; }
+  .tbtn { padding: 0.4rem 0.5rem; }
 }
 
 /* Login */
