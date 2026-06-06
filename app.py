@@ -21,8 +21,10 @@ import re
 import sqlite3
 from datetime import datetime
 from functools import wraps
+from html.parser import HTMLParser
 
 import fitz  # PyMuPDF
+import markdown as md
 from docx import Document as DocxDocument
 from flask import (
     Flask,
@@ -119,6 +121,16 @@ def init_db():
     # existed have content = NULL and fall back to reconstructing from chunks.
     if "content" not in cols:
         db.execute("ALTER TABLE documents ADD COLUMN content TEXT")
+
+    # Migration: how a document's content should be rendered on export/preview.
+    # 'plain' (the default for every pre-existing row, including uploaded
+    # PDF/DOCX/TXT) renders verbatim line-by-line; 'markdown' renders the
+    # editor's Markdown. Defaulting old rows to 'plain' keeps their exports
+    # byte-for-byte identical to before this feature.
+    if "format" not in cols:
+        db.execute(
+            "ALTER TABLE documents ADD COLUMN format TEXT NOT NULL DEFAULT 'plain'"
+        )
 
     db.commit()
     db.close()
@@ -249,23 +261,25 @@ def _index_chunks(db, doc_id, paragraphs):
         )
 
 
-def store_document(title, source_type, content, paragraphs, tags):
+def store_document(title, source_type, content, paragraphs, tags, fmt="plain"):
     """Insert a document, its raw content, and its paragraph chunks.
 
     `content` is the verbatim source of truth (preserves line breaks);
-    `paragraphs` is the derived, whitespace-collapsed search index.
+    `paragraphs` is the derived, whitespace-collapsed search index;
+    `fmt` is 'plain' or 'markdown' (how content renders on export).
     Returns the new doc id.
     """
     db = get_db()
     cur = db.execute(
-        "INSERT INTO documents (title, source_type, created_at, tags, content) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO documents (title, source_type, created_at, tags, content, format) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         (
             title,
             source_type,
             datetime.utcnow().isoformat(timespec="seconds"),
             pack_tags(tags),
             content,
+            fmt,
         ),
     )
     doc_id = cur.lastrowid
@@ -274,15 +288,15 @@ def store_document(title, source_type, content, paragraphs, tags):
     return doc_id
 
 
-def update_document(doc_id, title, content, paragraphs, tags):
-    """Overwrite a document's title/content/tags and rebuild its search index.
+def update_document(doc_id, title, content, paragraphs, tags, fmt="plain"):
+    """Overwrite a document's title/content/tags/format and rebuild its index.
 
     Leaves created_at and source_type untouched.
     """
     db = get_db()
     db.execute(
-        "UPDATE documents SET title = ?, content = ?, tags = ? WHERE id = ?",
-        (title, content, pack_tags(tags), doc_id),
+        "UPDATE documents SET title = ?, content = ?, tags = ?, format = ? WHERE id = ?",
+        (title, content, pack_tags(tags), fmt, doc_id),
     )
     _index_chunks(db, doc_id, paragraphs)
     db.commit()
@@ -304,14 +318,178 @@ def document_content(row):
     return "\n\n".join(c["content"] for c in chunks)
 
 
-def render_pdf(title, content):
+# --------------------------------------------------------------------------- #
+# Markdown rendering
+#
+# A single Markdown->HTML engine feeds the editor Preview, the print view, and
+# both binary exports, so what you see in Preview is what the PDF and .docx
+# render. The supported subset is deliberately small and matched to the editor
+# toolbar: headings, bold, italic, bullet/numbered lists, blockquote, links,
+# inline code, and horizontal rules.
+# --------------------------------------------------------------------------- #
+VALID_FORMATS = ("plain", "markdown")
+_MD_EXTENSIONS = ["sane_lists", "nl2br"]
+_ALLOWED_TAGS = {
+    "h1", "h2", "h3", "p", "strong", "em", "ul", "ol", "li",
+    "blockquote", "a", "code", "pre", "br", "hr",
+}
+
+
+class _Sanitizer(HTMLParser):
+    """Rebuild HTML keeping only an allowlist of tags; escape everything else.
+
+    Markdown can pass raw HTML through, so the rendered output is filtered to a
+    safe subset before it ever reaches the page or a renderer.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("br", "hr"):
+            self.out.append(f"<{tag}/>")
+        elif tag == "a":
+            href = dict(attrs).get("href", "") or ""
+            if re.match(r"^(https?:|mailto:)", href, re.I):
+                self.out.append(
+                    f'<a href="{escape(href)}" rel="noopener noreferrer" target="_blank">'
+                )
+            else:
+                self.out.append("<a>")
+        elif tag in _ALLOWED_TAGS:
+            self.out.append(f"<{tag}>")
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in ("br", "hr"):
+            self.out.append(f"<{tag}/>")
+
+    def handle_endtag(self, tag):
+        if tag in _ALLOWED_TAGS and tag not in ("br", "hr"):
+            self.out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        self.out.append(str(escape(data)))
+
+
+def markdown_to_html(content):
+    """Render Markdown to sanitized HTML (shared by preview, print, exports)."""
+    raw = md.markdown(content or "", extensions=_MD_EXTENSIONS)
+    s = _Sanitizer()
+    s.feed(raw)
+    s.close()
+    return "".join(s.out)
+
+
+class _TextExtractor(HTMLParser):
+    """Flatten rendered HTML to plain text with blank lines between blocks."""
+
+    _BLOCK = {"p", "h1", "h2", "h3", "li", "blockquote", "pre"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in ("br", "hr"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self._BLOCK:
+            self.parts.append("\n\n")
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+def markdown_to_text(content):
+    """Strip Markdown to readable plain text (for the search index/snippets)."""
+    e = _TextExtractor()
+    e.feed(markdown_to_html(content))
+    e.close()
+    return "".join(e.parts)
+
+
+def index_text(content, fmt):
+    """The text a document is searched on: Markdown is flattened, plain is verbatim."""
+    return markdown_to_text(content) if fmt == "markdown" else content
+
+
+class _DocxBuilder(HTMLParser):
+    """Walk sanitized HTML and emit python-docx paragraphs/runs."""
+
+    BLOCK_STYLE = {"h1": "Heading 1", "h2": "Heading 2", "h3": "Heading 3",
+                   "p": None, "blockquote": "Quote"}
+
+    def __init__(self, doc):
+        super().__init__(convert_charrefs=True)
+        self.doc = doc
+        self.p = None
+        self.bold = self.italic = self.code = False
+        self.lists = []
+
+    def _new_para(self, style=None):
+        try:
+            self.p = self.doc.add_paragraph(style=style)
+        except KeyError:  # style missing from the default template
+            self.p = self.doc.add_paragraph()
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("ul", "ol"):
+            self.lists.append(tag)
+        elif tag == "li":
+            self._new_para("List Number" if self.lists[-1:] == ["ol"] else "List Bullet")
+        elif tag in self.BLOCK_STYLE:
+            self._new_para(self.BLOCK_STYLE[tag])
+        elif tag == "strong":
+            self.bold = True
+        elif tag == "em":
+            self.italic = True
+        elif tag == "code":
+            self.code = True
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == "br" and self.p is not None:
+            self.p.add_run().add_break()
+        elif tag == "hr":
+            self.doc.add_paragraph()
+
+    def handle_endtag(self, tag):
+        if tag in ("ul", "ol"):
+            if self.lists:
+                self.lists.pop()
+        elif tag == "li" or tag in self.BLOCK_STYLE:
+            self.p = None
+        elif tag == "strong":
+            self.bold = False
+        elif tag == "em":
+            self.italic = False
+        elif tag == "code":
+            self.code = False
+
+    def handle_data(self, data):
+        if self.p is None:
+            if not data.strip():
+                return
+            self._new_para()
+        run = self.p.add_run(data)
+        run.bold = self.bold
+        run.italic = self.italic
+        if self.code:
+            run.font.name = "Courier New"
+
+
+def render_pdf(title, content, fmt):
     """Render title + content to a PDF and return the bytes (PyMuPDF Story)."""
-    body = "".join(f"<p>{escape(line)}</p>" for line in content.split("\n"))
-    html = (
-        "<html><body style='font-family:sans-serif;font-size:11pt;"
-        "line-height:1.5'>"
-        f"<h2>{escape(title)}</h2>{body}</body></html>"
-    )
+    if fmt == "markdown":
+        body = markdown_to_html(content)
+        css = "font-family:serif;font-size:12pt;line-height:1.5"
+        head = f"<h1>{escape(title)}</h1>"
+    else:  # plain: verbatim, one paragraph per line (unchanged legacy output)
+        body = "".join(f"<p>{escape(line)}</p>" for line in content.split("\n"))
+        css = "font-family:sans-serif;font-size:11pt;line-height:1.5"
+        head = f"<h2>{escape(title)}</h2>"
+    html = f"<html><body style='{css}'>{head}{body}</body></html>"
     story = fitz.Story(html=html)
     buf = io.BytesIO()
     writer = fitz.DocumentWriter(buf)
@@ -328,12 +506,15 @@ def render_pdf(title, content):
     return buf
 
 
-def render_docx(title, content):
+def render_docx(title, content, fmt):
     """Render title + content to a .docx and return a BytesIO."""
     doc = DocxDocument()
     doc.add_heading(title, level=1)
-    for line in content.split("\n"):
-        doc.add_paragraph(line)
+    if fmt == "markdown":
+        _DocxBuilder(doc).feed(markdown_to_html(content))
+    else:  # plain: one paragraph per line (unchanged legacy output)
+        for line in content.split("\n"):
+            doc.add_paragraph(line)
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -348,6 +529,12 @@ _NEAR_RE = re.compile(r'("[^"]*"|\S+)\s+NEAR/(\d+)\s+("[^"]*"|\S+)')
 
 def translate_near(query):
     return _NEAR_RE.sub(lambda m: f"NEAR({m.group(1)} {m.group(3)}, {m.group(2)})", query)
+
+
+def _parse_format(data):
+    """Read and validate a 'format' field, defaulting to 'plain'."""
+    fmt = (data.get("format") or "plain").strip().lower()
+    return fmt if fmt in VALID_FORMATS else "plain"
 
 
 # --------------------------------------------------------------------------- #
@@ -376,18 +563,20 @@ def add_note():
     if not content:
         return jsonify({"error": "Note content is empty."}), 400
 
-    title = (data.get("title") or "").strip()
-    if not title:
-        first_line = next((ln.strip() for ln in content.splitlines() if ln.strip()), "Untitled note")
-        title = first_line[:60] + ("…" if len(first_line) > 60 else "")
-
-    paragraphs = split_paragraphs(content)
+    fmt = _parse_format(data)
+    searchable = index_text(content, fmt)
+    paragraphs = split_paragraphs(searchable)
     if not paragraphs:
         return jsonify({"error": "Note has no searchable text."}), 400
 
+    title = (data.get("title") or "").strip()
+    if not title:
+        first_line = next((ln.strip() for ln in searchable.splitlines() if ln.strip()), "Untitled note")
+        title = first_line[:60] + ("…" if len(first_line) > 60 else "")
+
     tags = normalize_tags(data.get("tags"))
-    doc_id = store_document(title, "note", content, paragraphs, tags)
-    return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags}), 201
+    doc_id = store_document(title, "note", content, paragraphs, tags, fmt)
+    return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags, "format": fmt}), 201
 
 
 @app.route("/upload", methods=["POST"])
@@ -543,7 +732,7 @@ def get_document(doc_id):
     """Return one document with its full, verbatim text for the editor."""
     db = get_db()
     row = db.execute(
-        "SELECT id, title, source_type, created_at, tags, content "
+        "SELECT id, title, source_type, created_at, tags, content, format "
         "FROM documents WHERE id = ?",
         (doc_id,),
     ).fetchone()
@@ -557,6 +746,7 @@ def get_document(doc_id):
             "created_at": row["created_at"],
             "tags": unpack_tags(row["tags"]),
             "content": document_content(row),
+            "format": row["format"],
         }
     )
 
@@ -575,20 +765,30 @@ def save_document(doc_id):
     if not content:
         return jsonify({"error": "Document is empty."}), 400
 
-    title = (data.get("title") or "").strip()
-    if not title:
-        first_line = next(
-            (ln.strip() for ln in content.splitlines() if ln.strip()), "Untitled"
-        )
-        title = first_line[:60] + ("…" if len(first_line) > 60 else "")
-
-    paragraphs = split_paragraphs(content)
+    fmt = _parse_format(data)
+    searchable = index_text(content, fmt)
+    paragraphs = split_paragraphs(searchable)
     if not paragraphs:
         return jsonify({"error": "Document has no searchable text."}), 400
 
+    title = (data.get("title") or "").strip()
+    if not title:
+        first_line = next(
+            (ln.strip() for ln in searchable.splitlines() if ln.strip()), "Untitled"
+        )
+        title = first_line[:60] + ("…" if len(first_line) > 60 else "")
+
     tags = normalize_tags(data.get("tags"))
-    update_document(doc_id, title, content, paragraphs, tags)
-    return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags})
+    update_document(doc_id, title, content, paragraphs, tags, fmt)
+    return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags, "format": fmt})
+
+
+@app.route("/render", methods=["POST"])
+@login_required
+def render_markdown():
+    """Render Markdown to sanitized HTML for the editor Preview and print view."""
+    data = request.get_json(silent=True) or {}
+    return jsonify({"html": markdown_to_html(data.get("content") or "")})
 
 
 # Renderers and MIME types per export format. PDF/DOCX build binary streams;
@@ -612,15 +812,17 @@ def export_document(doc_id, fmt):
 
     db = get_db()
     row = db.execute(
-        "SELECT id, title, content FROM documents WHERE id = ?", (doc_id,)
+        "SELECT id, title, content, format FROM documents WHERE id = ?", (doc_id,)
     ).fetchone()
     if row is None:
         return jsonify({"error": "Document not found."}), 404
 
     title = row["title"]
     content = document_content(row)
+    doc_format = row["format"]
     mimetype, renderer = _EXPORTERS[fmt]
-    stream = io.BytesIO(content.encode("utf-8")) if renderer is None else renderer(title, content)
+    # TXT is always the raw source; PDF/DOCX render per the document's format.
+    stream = io.BytesIO(content.encode("utf-8")) if renderer is None else renderer(title, content, doc_format)
 
     stem = secure_filename(os.path.splitext(title)[0]) or f"document-{doc_id}"
     return send_file(

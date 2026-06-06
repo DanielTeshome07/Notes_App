@@ -331,6 +331,49 @@ body.editor-page {
   padding: 0.46rem 1.05rem; border-radius: 7px; font-size: 0.85rem; font-weight: 700;
 }
 
+/* Markdown formatting bar (second toolbar row) */
+.format-bar {
+  display: flex; align-items: center; gap: 0.12rem; flex-wrap: wrap;
+  padding: 0.3rem 0.9rem; flex: none;
+  background: var(--card); border-bottom: 1px solid var(--line);
+}
+.format-bar .grow { flex: 1; }
+.format-bar .tbar-div { margin: 0 0.25rem; }
+.fbtn {
+  background: transparent; color: var(--chip-ink); border: none;
+  min-width: 30px; padding: 0.34rem 0.5rem; border-radius: 6px;
+  font-size: 0.82rem; font-weight: 600; white-space: nowrap;
+}
+.fbtn:hover { filter: none; background: var(--chip); color: var(--ink); }
+.fbtn:disabled { opacity: 0.4; }
+.fbtn b, .fbtn i { font-size: 0.92rem; }
+.fbtn.toggle { color: var(--accent); }
+
+/* Rendered Markdown preview, styled to match the document sheet */
+.doc-preview {
+  font-family: "Times New Roman", Times, Georgia, serif;
+  font-size: 13pt; line-height: 1.7; color: inherit; min-height: 22cm;
+}
+.doc-preview > :first-child { margin-top: 0; }
+.doc-preview h1 { font-size: 22pt; font-weight: 700; margin: 0 0 0.4em; }
+.doc-preview h2 { font-size: 17pt; font-weight: 700; margin: 1.1em 0 0.3em; }
+.doc-preview h3 { font-size: 14pt; font-weight: 700; margin: 1em 0 0.3em; }
+.doc-preview p { margin: 0 0 0.8em; }
+.doc-preview ul, .doc-preview ol { margin: 0 0 0.8em 1.4em; padding: 0; }
+.doc-preview li { margin: 0.15em 0; }
+.doc-preview blockquote {
+  margin: 0 0 0.8em; padding: 0.15em 0 0.15em 1em;
+  border-left: 3px solid var(--paper-edge); color: #555;
+}
+.doc-preview a { color: #2952c8; text-decoration: underline; }
+.doc-preview code {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em;
+  background: #f0f0f3; padding: 0.05em 0.3em; border-radius: 4px;
+}
+.doc-preview pre { background: #f0f0f3; padding: 0.7em 0.9em; border-radius: 8px; overflow: auto; }
+.doc-preview pre code { background: none; padding: 0; }
+.doc-preview hr { border: none; border-top: 1px solid var(--paper-edge); margin: 1.2em 0; }
+
 /* A4 sheet centered on a gradient "desk"; the sheet grows with its content. */
 .writing-scroll {
   flex: 1; overflow-y: auto;
@@ -402,6 +445,7 @@ body.editor-page {
 
 /* Focus mode: hide chrome, calm the desk, keep the caret line centered */
 body.focus .doc-toolbar,
+body.focus .format-bar,
 body.focus .doc-statusbar { display: none; }
 body.focus .writing-scroll { background: var(--canvas); padding-top: 18vh; padding-bottom: 40vh; }
 .focus-exit {
