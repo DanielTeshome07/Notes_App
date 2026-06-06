@@ -21,6 +21,7 @@
   --paper-ink: #1b1b1b;
   --paper-edge: #e2e6ee;
   --paper-muted: #6b7280;
+  --page-line: rgba(20, 20, 20, 0.22);   /* faux A4 page-break guide */
 }
 
 [data-theme="dark"] {
@@ -290,24 +291,33 @@ body.editor-page {
 .writing-top .icon-btn { text-decoration: none; }
 .writing-top .grow { flex: 1; }
 
-/* A4 sheet floating on a themed canvas; the sheet grows with its content. */
+/* A4 sheet centered on a themed canvas; the sheet grows with its content. */
 .writing-scroll {
   flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column; align-items: center;  /* centers the sheet */
   background: var(--canvas);
-  padding-bottom: 6rem;   /* room so the last page clears the floating bar */
+  padding: 2.5rem 1rem 6rem;   /* top/bottom gaps; bottom clears the floating bar */
 }
 .paper {
   /* Real A4: 21cm × 29.7cm with ~2.5cm document margins. */
   width: 21cm;
-  max-width: calc(100% - 2rem);
+  max-width: 100%;
   min-height: 29.7cm;
-  margin: 2.5rem auto;
   padding: 2.5cm 2.2cm;
-  background: var(--paper);
   color: var(--paper-ink);
   border: 1px solid var(--paper-edge);
   border-radius: 2px;
   box-shadow: 0 6px 28px rgba(0, 0, 0, 0.22);
+  /* White sheet + a faint guide line at every A4 page boundary (29.7cm),
+     so a multi-page document reads like stacked sheets. */
+  background-color: var(--paper);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(29.7cm - 1px),
+    var(--page-line) calc(29.7cm - 1px),
+    var(--page-line) 29.7cm
+  );
 }
 /* Fields are transparent on the sheet and inherit the paper's dark ink so they
    stay readable in dark mode (where var(--ink) would be light). The .paper
@@ -360,7 +370,8 @@ body.editor-page {
 .ed-status.saved { color: var(--ok); }
 @media (max-width: 820px) {
   /* Below A4 width, let the sheet fill the screen with tighter margins. */
-  .paper { margin: 1rem auto; padding: 1.6rem 1.3rem; min-height: 80vh; border-radius: 0; }
+  .writing-scroll { padding: 0.6rem 0.6rem 6rem; }
+  .paper { padding: 1.6rem 1.3rem; min-height: 80vh; border-radius: 0; }
   .paper .doc-body { min-height: 60vh; }
   .fab-bar { right: 0.8rem; bottom: 0.8rem; }
   .fab-ghost { padding: 0.4rem 0.5rem; }
