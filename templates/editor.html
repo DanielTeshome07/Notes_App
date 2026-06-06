@@ -16,24 +16,30 @@
   </script>
 </head>
 <body class="editor-page">
-  <div class="editor-toolbar">
+  <div class="writing-top">
     <a href="{{ url_for('index') }}" class="icon-btn" title="Back to notes" aria-label="Back to notes">←</a>
-    <input type="text" id="ed-title" class="ed-title-input" placeholder="Untitled — type a title (optional)">
     <span id="ed-badge"></span>
-    <span class="ed-tools">
-      <button id="ed-save">Save</button>
-      <button id="ed-pdf" class="btn-secondary" title="Save &amp; download as PDF">PDF</button>
-      <button id="ed-docx" class="btn-secondary" title="Save &amp; download as Word .docx">.docx</button>
-      <button id="ed-txt" class="btn-secondary" title="Save &amp; download as plain text">.txt</button>
-      <button id="ed-print" class="btn-secondary" title="Print">🖨</button>
-    </span>
-  </div>
-  <div class="editor-subbar">
-    <input type="text" id="ed-tags" class="ed-tags-input" placeholder="Tags (comma separated, optional)">
+    <span class="grow"></span>
     <span id="ed-status" class="ed-status"></span>
   </div>
-  <textarea id="ed-content" class="editor-fullarea"
-    placeholder="Start writing… line breaks are preserved. Ctrl/⌘+S to save." autofocus></textarea>
+
+  <div class="writing-scroll">
+    <div class="writing-col">
+      <input type="text" id="ed-title" class="doc-title-field" placeholder="Title">
+      <input type="text" id="ed-tags" class="doc-tags-field" placeholder="Add tags, comma separated…">
+      <textarea id="ed-content" class="doc-body" rows="1"
+        placeholder="Start writing… line breaks are preserved. Press Ctrl/⌘+S to save." autofocus></textarea>
+    </div>
+  </div>
+
+  <div class="fab-bar">
+    <button id="ed-pdf" class="fab-ghost" title="Save &amp; download as PDF">PDF</button>
+    <button id="ed-docx" class="fab-ghost" title="Save &amp; download as Word .docx">.docx</button>
+    <button id="ed-txt" class="fab-ghost" title="Save &amp; download as plain text">.txt</button>
+    <button id="ed-print" class="fab-ghost" title="Print">🖨</button>
+    <span class="fab-divider"></span>
+    <button id="ed-save" class="fab-save">Save</button>
+  </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
@@ -71,6 +77,12 @@
       el.textContent = text;
       el.className = "ed-status" + (kind ? " " + kind : "");
     }
+    // Grow the textarea to fit its content so the whole page scrolls as one doc.
+    function autoGrow() {
+      const t = $("#ed-content");
+      t.style.height = "auto";
+      t.style.height = t.scrollHeight + "px";
+    }
 
     // ---- load an existing document into the page ----
     async function load() {
@@ -84,6 +96,7 @@
         $("#ed-content").value = d.content || "";
         setBadge(d.source_type);
         document.title = `${d.title} — Notes`;
+        autoGrow();
         $("#ed-content").focus();
       } catch (e) {
         if (e.message !== "unauthorized") toast("Could not open document.", "error");
@@ -98,6 +111,7 @@
       currentDoc = null;
       setBadge("");
       setStatus("");
+      autoGrow();
       $("#ed-content").focus();
     }
 
@@ -170,6 +184,9 @@
     // Show an unsaved indicator as soon as the user changes anything.
     ["#ed-title", "#ed-tags", "#ed-content"].forEach((s) =>
       $(s).addEventListener("input", () => setStatus("Unsaved changes", "dirty")));
+    // Keep the textarea sized to its content while typing.
+    $("#ed-content").addEventListener("input", autoGrow);
+    window.addEventListener("resize", autoGrow);
 
     // Ctrl/⌘+S saves instead of triggering the browser's save dialog.
     document.addEventListener("keydown", (e) => {
