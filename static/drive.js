@@ -97,12 +97,14 @@
     $("#sidebar").classList.remove("open");
     if (head === "folder" && rest[0]) { state.view = "drive"; state.folder = parseInt(rest[0], 10); }
     else if (["recent", "starred", "trash"].includes(head)) { state.view = head; state.folder = null; }
+    else if (head === "tag" && rest[0]) { state.view = "tag"; state.tag = decodeURIComponent(rest.join("/")); }
     else if (head === "search") { state.view = "search"; state.query = decodeURIComponent(rest.join("/")); }
     else { state.view = "drive"; state.folder = null; }
     if (state.view !== "search") $("#search-input").value = "";
     else if (document.activeElement !== $("#search-input")) $("#search-input").value = state.query;
     $$(".d-nav a").forEach((a) => a.classList.toggle("active",
       a.dataset.nav === state.view && !(state.view === "drive" && state.folder !== null)));
+    $$("#tag-nav a").forEach((a) => a.classList.toggle("active", state.view === "tag" && a.dataset.tag === state.tag));
     load();
   }
   window.addEventListener("hashchange", route);
@@ -121,6 +123,8 @@
       if (state.view === "drive") {
         data = await api("/api/drive" + (state.folder != null ? "?folder=" + state.folder : ""));
         state.crumbs = data.breadcrumbs;
+      } else if (state.view === "tag") {
+        data = await api("/api/drive/tag?t=" + encodeURIComponent(state.tag));
       } else if (state.view === "search") {
         data = await api("/api/drive/search?q=" + encodeURIComponent(state.query));
         searchContent(state.query, seq);
@@ -137,6 +141,19 @@
       box.innerHTML = '<p class="status error d-pad">Could not load. ' + esc(e.message) + "</p>";
     }
     loadStorage();
+    loadTags();
+  }
+
+  async function loadTags() {
+    try {
+      const d = await api("/tags");
+      const box = $("#tag-nav");
+      box.innerHTML = d.tags.length
+        ? '<h4>Tags</h4>' + d.tags.map((t) =>
+            `<a href="#/tag/${encodeURIComponent(t.tag)}" data-tag="${esc(t.tag)}"><span># ${esc(t.tag)}</span><span class="muted">${t.count}</span></a>`).join("")
+        : "";
+      $$("#tag-nav a").forEach((a) => a.classList.toggle("active", state.view === "tag" && a.dataset.tag === state.tag));
+    } catch (_) { /* non-critical */ }
   }
 
   async function loadStorage() {
@@ -165,6 +182,7 @@
   function renderCrumbs() {
     const c = $("#crumbs");
     const titles = { recent: "Recent", starred: "Starred", trash: "Trash" };
+    if (state.view === "tag") { c.innerHTML = `<span># ${esc(state.tag)}</span>`; return; }
     if (state.view === "search") { c.innerHTML = `<span>Search results for “${esc(state.query)}”</span>`; return; }
     if (titles[state.view]) { c.innerHTML = `<span>${titles[state.view]}</span>`; return; }
     const parts = [`<a href="#/" data-drop-folder="">My Drive</a>`];
@@ -191,7 +209,7 @@
   function metaText(it) {
     if (state.view === "trash") return "Trashed " + relTime(it.trashed_at);
     if (it.type === "folder") return it.item_count != null ? `${it.item_count} item${it.item_count === 1 ? "" : "s"}` : "Folder";
-    if (it.type === "note") return "Note · " + relTime(it.updated_at);
+    if (it.type === "note") return relTime(it.updated_at);
     return fmtSize(it.size) + " · " + relTime(it.updated_at);
   }
 
@@ -207,7 +225,7 @@
         drive: state.folder == null
           ? "Your drive is empty. Drop files here, or use <b>＋ New</b> to upload photos, videos, PDFs, or write a note."
           : "This folder is empty. Drop files here or use <b>＋ New</b>.",
-        recent: "Nothing yet.", starred: "Star files and folders to find them here quickly.",
+        recent: "Nothing yet.", tag: "Nothing has this tag.", starred: "Star files and folders to find them here quickly.",
         trash: "Trash is empty.", search: "No files or folders match that name.",
       };
       box.className = "d-items";
@@ -235,7 +253,7 @@
             <span class="d-check" aria-hidden="true">✓</span>
             <span class="d-card-text">
               <span class="d-card-name" title="${esc(it.name)}">${it.type === "folder" ? "" : (ICON[kindOf(it)] || "") + " "}${esc(it.name)}</span>
-              <span class="d-card-meta">${it.starred ? '<span class="d-star">★</span> ' : ""}${esc(metaText(it))}</span>
+              <span class="d-card-meta">${it.starred ? '<span class="d-star">★</span> ' : ""}${esc(metaText(it))}${(it.tags || []).map((t) => ` <a class="d-tag" href="#/tag/${encodeURIComponent(t)}">#${esc(t)}</a>`).join("")}</span>
             </span>
             <button class="d-more" aria-label="More actions">⋮</button>
           </div>
@@ -259,6 +277,7 @@
     if (!el) return;
     const it = itemByKey(el.dataset.key);
     if (!it) return;
+    if (e.target.closest(".d-tag")) return;   // tag chip: follow its link
     if (e.target.closest(".d-more")) { e.stopPropagation(); openCtx(it, e.target.closest(".d-more")); return; }
     if (e.target.closest(".d-check") || e.ctrlKey || e.metaKey || e.shiftKey || state.selected.size) {
       toggleSelect(it); return;

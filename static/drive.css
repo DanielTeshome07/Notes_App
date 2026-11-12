@@ -47,6 +47,11 @@ body.no-scroll { overflow: hidden; }
 }
 .d-nav a:hover { background: var(--chip); }
 .d-nav a.active { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.d-tags h4 { margin: 0 0 0.3rem 0.9rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.d-tags a { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.35rem 0.9rem; font-size: 0.86rem; }
+.d-tags a span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-tag { color: var(--accent); text-decoration: none; font-weight: 600; }
+.d-tag:hover { text-decoration: underline; }
 .d-storage { padding: 0 0.9rem; margin-top: auto; }
 .d-storage-bar { height: 5px; border-radius: 99px; background: var(--chip); overflow: hidden; }
 .d-storage-bar span { display: block; height: 100%; width: 1%; background: var(--accent); border-radius: 99px; }

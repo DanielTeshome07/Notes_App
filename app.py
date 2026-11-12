@@ -860,7 +860,7 @@ def list_tags():
     """Return every distinct tag with a count of documents using it."""
     db = get_db()
     counts = {}
-    for (packed,) in db.execute("SELECT tags FROM documents"):
+    for (packed,) in db.execute("SELECT tags FROM documents WHERE trashed_at IS NULL"):
         for tag in unpack_tags(packed):
             counts[tag] = counts.get(tag, 0) + 1
     tags = [{"tag": t, "count": c} for t, c in sorted(counts.items())]
@@ -1378,6 +1378,20 @@ def drive_recent():
 def drive_starred():
     db = get_db()
     return jsonify({"items": _alive_items(db, "starred = 1", "d.pinned = 1", "starred = 1")})
+
+
+@app.route("/api/drive/tag")
+@login_required
+def drive_tag():
+    """Notes and indexed uploads carrying one tag (tags are kept on documents)."""
+    tag = (request.args.get("t") or "").strip().lower()
+    if not tag:
+        return jsonify({"items": []})
+    db = get_db()
+    like = f"%,{tag},%"
+    items = _alive_items(db, "id IN (SELECT file_id FROM documents WHERE file_id IS NOT NULL AND tags LIKE ?)",
+                         "d.tags LIKE ?", args=(like,), limit=500)
+    return jsonify({"items": items})
 
 
 @app.route("/api/drive/search")
