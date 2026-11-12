@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 import uuid
@@ -252,6 +253,10 @@ def init_db():
     flcols = {row[1] for row in db.execute("PRAGMA table_info(files)")}
     if "sniffed" not in flcols:
         db.execute("ALTER TABLE files ADD COLUMN sniffed INTEGER NOT NULL DEFAULT 0")
+    if "duration" not in flcols:
+        db.execute("ALTER TABLE files ADD COLUMN duration REAL")
+    if "thumb_tried" not in flcols:   # video poster attempted (don't retry forever)
+        db.execute("ALTER TABLE files ADD COLUMN thumb_tried INTEGER NOT NULL DEFAULT 0")
     if "taken_at" not in flcols:
         db.execute("ALTER TABLE files ADD COLUMN taken_at TIMESTAMP")
     ucols = {row[1] for row in db.execute("PRAGMA table_info(uploads)")}
@@ -1445,6 +1450,7 @@ def file_json(r):
             "folder_id": r["folder_id"], "starred": bool(r["starred"]),
             "has_thumb": bool(r["has_thumb"]), "inline": r["mime"] in INLINE_MIMES,
             "cat": file_category(r["mime"], r["name"]), "taken_at": r["taken_at"],
+            "duration": r["duration"],
             "created_at": r["created_at"], "updated_at": r["updated_at"] or r["created_at"],
             "trashed_at": r["trashed_at"]}
 
@@ -1465,6 +1471,71 @@ _NOTE_COLS = """d.id, d.title, d.source_type, d.folder_id, d.pinned, d.tags, d.c
 
 
 # ---- thumbnails / text extraction ---------------------------------------- #
+def _ffmpeg_exe():
+    """ffmpeg from the imageio-ffmpeg wheel (a static build), else PATH."""
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return shutil.which("ffmpeg")
+
+
+_DURATION_RE = re.compile(rb"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def video_thumb(src, key):
+    """Grab a poster frame (about 1s in) as a JPEG thumbnail.
+
+    Returns (ok, duration_seconds). ffmpeg seeks before decoding, so this
+    stays fast on long videos; it honours rotation (portrait phone clips) and
+    decodes HEVC, which most browsers can't.
+    """
+    exe = _ffmpeg_exe()
+    if not exe:
+        return False, None
+    out = os.path.join(THUMBS_DIR, key + ".jpg")
+    duration = None
+    for seek in ("1", "0"):          # very short clips have no frame at 1s
+        try:
+            p = subprocess.run(
+                [exe, "-hide_banner", "-nostdin", "-y", "-ss", seek, "-i", src,
+                 "-frames:v", "1", "-an",
+                 "-vf", "scale=480:480:force_original_aspect_ratio=decrease",
+                 "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", out],
+                capture_output=True, timeout=120,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            break
+        m = _DURATION_RE.search(p.stderr)
+        if m:
+            duration = int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3])
+        if p.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0:
+            return True, duration
+    if os.path.exists(out):
+        os.remove(out)
+    return False, duration
+
+
+def _backfill_video_thumbs():
+    """Background: posters for videos uploaded before thumbnails existed."""
+    try:
+        db = sqlite3.connect(DB_PATH, timeout=30)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA busy_timeout = 30000")
+        rows = db.execute("SELECT id, storage_key FROM files WHERE mime LIKE 'video/%' "
+                          "AND has_thumb = 0 AND thumb_tried = 0").fetchall()
+        for r in rows:
+            path = os.path.join(FILES_DIR, r["storage_key"])
+            ok, dur = video_thumb(path, r["storage_key"]) if os.path.exists(path) else (False, None)
+            db.execute("UPDATE files SET has_thumb = ?, duration = COALESCE(?, duration), "
+                       "thumb_tried = 1 WHERE id = ?", (int(ok), dur, r["id"]))
+            db.commit()
+        db.close()
+    except Exception:
+        app.logger.exception("video thumbnail backfill failed")
+
+
 def make_thumb(src, key, mime):
     """Write a small JPEG preview for images and PDFs. Returns True on success."""
     out = os.path.join(THUMBS_DIR, key + ".jpg")
@@ -1534,12 +1605,18 @@ def finalize_file(db, part_path, raw_name, folder_id, tags, rel_dir=""):
     os.makedirs(FILES_DIR, exist_ok=True)
     os.replace(part_path, dest)
     size = os.path.getsize(dest)
-    has_thumb = make_thumb(dest, key, mime)
+    duration = None
+    if mime.startswith("video/"):
+        has_thumb, duration = video_thumb(dest, key)
+    else:
+        has_thumb = make_thumb(dest, key, mime)
     now = utcnow_iso()
     cur = db.execute(
         "INSERT INTO files (folder_id, name, mime, size, storage_key, has_thumb, created_at, "
-        "updated_at, sniffed, taken_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
-        (folder_id, name, mime, size, key, int(has_thumb), now, now, taken_at),
+        "updated_at, sniffed, taken_at, duration, thumb_tried) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+        (folder_id, name, mime, size, key, int(has_thumb), now, now, taken_at, duration,
+         int(mime.startswith("video/"))),
     )
     file_id = cur.lastrowid
     db.commit()
@@ -2206,6 +2283,7 @@ def healthz():
 # Initialise the schema at import time so it runs under gunicorn too (not just
 # the __main__ dev server).
 init_db()
+threading.Thread(target=_backfill_video_thumbs, name="video-thumbs", daemon=True).start()
 with app.app_context():
     housekeeping(get_db())
 

@@ -18,6 +18,11 @@
     while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
     return (i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)) + " " + u[i];
   }
+  function fmtDur(sec) {
+    sec = sec > 0 ? Math.max(1, Math.round(sec)) : 0;
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
+  }
   // Timestamps are naive UTC; mark them Z so the browser converts to local.
   function relTime(iso) {
     if (!iso) return "";
@@ -242,7 +247,12 @@
     const k = kindOf(it);
     if (it.type === "file" && it.has_thumb) {
       return `<img loading="lazy" src="/files/${it.id}/thumb" alt="">` +
-        (k === "pdf" ? `<span class="d-kind-chip">PDF</span>` : "");
+        (k === "pdf" ? `<span class="d-kind-chip">PDF</span>` : "") +
+        (k === "video" ? `<span class="d-play" aria-hidden="true">▶</span>` : "") +
+        (k === "video" && it.duration ? `<span class="d-dur">${fmtDur(it.duration)}</span>` : "");
+    }
+    if (k === "video" && it.duration) {
+      return `<span class="d-big-icon">🎬</span><span class="d-dur">${fmtDur(it.duration)}</span>`;
     }
     if (it.type === "note" && it.excerpt) {
       return `<div class="d-note-excerpt">${esc(it.excerpt)}</div>`;
@@ -332,7 +342,7 @@
           <span class="d-row-icon">${ICON[kindOf(it)] || ICON.other}</span>
           <span class="d-row-name">${esc(it.name)}${it.starred ? ' <span class="d-star">★</span>' : ""}</span>
           <span class="muted">${state.view === "trash" ? relTime(it.trashed_at) : relTime(it.updated_at)}</span>
-          <span class="muted">${it.type === "file" ? fmtSize(it.size) : "—"}</span>
+          <span class="muted">${it.type === "file" ? fmtSize(it.size) + (it.duration ? " · " + fmtDur(it.duration) : "") : "—"}</span>
           <button class="d-more" aria-label="More actions">⋮</button>
         </div>`).join("");
     } else {
@@ -1012,13 +1022,14 @@
     $("#pv-prev").classList.toggle("hidden", pvIndex <= 0);
     $("#pv-next").classList.toggle("hidden", pvIndex >= pvList.length - 1);
     const src = `/files/${it.id}/view`;
-    const noPreview = (why) => `<div class="pv-none"><span class="d-big-icon">${ICON[it.kind] || ICON.other}</span>
+    const noPreview = (why) => `<div class="pv-none">${it.has_thumb && it.kind === "video"
+        ? `<img class="pv-poster" src="/files/${it.id}/thumb" alt="">` : `<span class="d-big-icon">${ICON[it.kind] || ICON.other}</span>`}
       <p>${esc(why)}</p><p class="muted">${esc(it.mime)} · ${fmtSize(it.size)}</p>
       <a class="btn-primary" href="/files/${it.id}/download">⬇ Download</a></div>`;
     if (it.kind === "image" && it.inline) body.innerHTML = `<img src="${src}" alt="${esc(it.name)}">`;
     else if (it.kind === "video" && it.inline) {
-      body.innerHTML = `<video src="${src}" controls autoplay playsinline preload="metadata"></video>`;
-      $("video", body).onerror = () => { body.innerHTML = noPreview("This video format can't play in the browser. Download it to watch."); };
+      body.innerHTML = `<video src="${src}" controls autoplay playsinline preload="metadata"${it.has_thumb ? ` poster="/files/${it.id}/thumb"` : ""}></video>`;
+      $("video", body).onerror = () => { body.innerHTML = noPreview("This video's format (often iPhone HEVC) can't play in this browser. Download it to watch."); };
     } else if (it.kind === "audio" && it.inline) body.innerHTML = `<div class="pv-audio"><span class="d-big-icon">🎵</span><audio src="${src}" controls autoplay></audio></div>`;
     else if (it.kind === "pdf") body.innerHTML = `<iframe src="${src}" title="${esc(it.name)}"></iframe>`;
     else if (["text", "doc"].includes(it.kind)) {
