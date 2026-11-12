@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Notes App — Personal Knowledge Base</title>
+  <title>Drive — Notes</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ css_version }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='drive.css') }}?v={{ css_version }}">
   <script>
     // Apply saved/system theme before paint to avoid a flash of the wrong theme.
     (function () {
@@ -15,456 +16,133 @@
     })();
   </script>
 </head>
-<body>
-  <header class="appbar">
-    <div class="appbar-inner">
-      <a class="brand" href="{{ url_for('index') }}">
-        <span class="brand-mark">📒</span>
-        <span class="brand-text">Notes</span>
-      </a>
-      <div class="appbar-actions">
-        <a href="{{ url_for('editor_page') }}" class="btn-primary">✏️ New document</a>
-        <button id="theme-toggle" class="icon-btn" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
-        <form method="POST" action="{{ url_for('logout') }}" id="logout-form">
-          <button type="submit" class="icon-btn" title="Sign out" aria-label="Sign out">⎋</button>
-        </form>
-      </div>
+<body class="drive-page">
+  <header class="d-appbar">
+    <button id="menu-toggle" class="icon-btn d-only-mobile" aria-label="Menu">☰</button>
+    <a class="brand" href="#/">
+      <span class="brand-mark">📒</span>
+      <span class="brand-text">Drive</span>
+    </a>
+    <form id="search-form" class="d-search" autocomplete="off">
+      <span class="search-icon" aria-hidden="true">🔍</span>
+      <input type="search" id="search-input" placeholder="Search files, folders and text inside documents" aria-label="Search">
+    </form>
+    <div class="appbar-actions">
+      <button id="theme-toggle" class="icon-btn" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+      <form method="POST" action="{{ url_for('logout') }}">
+        <button type="submit" class="icon-btn" title="Sign out" aria-label="Sign out">⎋</button>
+      </form>
     </div>
   </header>
 
-  <main>
-    <!-- Search hero -->
-    <section class="search-hero">
-      <h1 class="hero-title">Find anything in your library</h1>
-      <form id="search-form" class="search-box" autocomplete="off">
-        <span class="search-icon" aria-hidden="true">🔍</span>
-        <input type="search" id="search-input" placeholder="Search everything, down to the paragraph…" aria-label="Search">
-        <button type="submit">Search</button>
-      </form>
-      <p class="hint">
-        Press <code>/</code> to search. Try <code>"exact phrase"</code>, <code>meet*</code> (prefix), or
-        <code>deadline NEAR/3 budget</code>.
-      </p>
-      <div id="tag-filter" class="tag-filter hidden"></div>
-      <div id="search-status" class="status"></div>
-      <div id="results"></div>
-    </section>
-
-    <!-- Quick capture -->
-    <div class="capture-grid">
-      <section class="panel">
-        <div class="panel-head"><h2>📝 Quick note</h2></div>
-        <form id="note-form" class="panel-body">
-          <input type="text" id="note-title" placeholder="Title (optional)">
-          <textarea id="note-content" rows="5" placeholder="Paste or type anything… separate paragraphs with a blank line."></textarea>
-          <input type="text" id="note-tags" placeholder="Tags (comma separated, optional)">
-          <button type="submit">Save note</button>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head"><h2>📎 Upload a file</h2></div>
-        <div class="panel-body upload-body">
-          <div id="dropzone" class="dropzone">
-            <span class="dz-icon" aria-hidden="true">⬆️</span>
-            <p class="dropzone-text">Drag &amp; drop, or click to choose</p>
-            <p class="hint">PDF, DOCX, or TXT</p>
-            <input type="file" id="file-input" accept=".pdf,.docx,.txt" multiple hidden>
-          </div>
-          <input type="text" id="upload-tags" placeholder="Tags for upload (comma separated, optional)">
+  <div class="d-shell">
+    <aside id="sidebar" class="d-sidebar">
+      <div class="d-new-wrap">
+        <button id="new-btn" class="d-new-btn" aria-haspopup="menu">＋ New</button>
+        <div id="new-menu" class="d-menu hidden" role="menu">
+          <button data-new="folder" role="menuitem">📁 New folder</button>
+          <button data-new="note" role="menuitem">📝 New note</button>
+          <hr>
+          <button data-new="files" role="menuitem">⬆️ Upload files</button>
+          <button data-new="dir" role="menuitem">🗂️ Upload folder</button>
         </div>
-      </section>
-    </div>
-
-    <!-- Documents -->
-    <section class="docs-section">
-      <div class="section-head">
-        <h2>📚 Your library</h2>
-        <span id="doc-count" class="count-pill"></span>
-        <span class="grow"></span>
-        <label class="sort-label" for="doc-sort">Sort</label>
-        <select id="doc-sort" class="sort-select" aria-label="Sort documents">
-          <option value="updated">Recently edited</option>
-          <option value="created">Newest first</option>
-          <option value="title">Title A–Z</option>
-        </select>
       </div>
-      <div id="documents" class="docs-grid"><p class="muted">Loading…</p></div>
-    </section>
-  </main>
+      <nav class="d-nav">
+        <a href="#/" data-nav="drive">🗄️ My Drive</a>
+        <a href="#/recent" data-nav="recent">🕘 Recent</a>
+        <a href="#/starred" data-nav="starred">⭐ Starred</a>
+        <a href="#/trash" data-nav="trash">🗑️ Trash</a>
+      </nav>
+      <div class="d-storage">
+        <div class="d-storage-bar"><span id="storage-fill"></span></div>
+        <p id="storage-text" class="muted">…</p>
+      </div>
+    </aside>
+
+    <main id="main" class="d-main">
+      <div class="d-toolbar">
+        <nav id="crumbs" class="d-crumbs" aria-label="Breadcrumb"></nav>
+        <span class="grow"></span>
+        <select id="sort" class="sort-select" aria-label="Sort">
+          <option value="name">Name</option>
+          <option value="updated">Last modified</option>
+          <option value="size">Size</option>
+        </select>
+        <button id="view-toggle" class="icon-btn" title="Toggle grid / list" aria-label="Toggle grid or list view">☷</button>
+      </div>
+
+      <div id="selbar" class="d-selbar hidden">
+        <span id="sel-count"></span>
+        <span class="grow"></span>
+        <button data-sel="download" class="tbtn">⬇ Download</button>
+        <button data-sel="move" class="tbtn">➜ Move</button>
+        <button data-sel="star" class="tbtn">☆ Star</button>
+        <button data-sel="trash" class="tbtn">🗑 Trash</button>
+        <button data-sel="restore" class="tbtn hidden">↺ Restore</button>
+        <button data-sel="forever" class="tbtn hidden">✕ Delete forever</button>
+        <button data-sel="clear" class="tbtn">Clear</button>
+      </div>
+
+      <div id="trash-note" class="d-trash-note hidden">
+        Items in the trash are deleted forever after <span id="trash-days">30</span> days.
+        <button id="empty-trash" class="link-btn">Empty trash now</button>
+      </div>
+
+      <div id="items"></div>
+      <section id="content-results" class="d-content-results hidden">
+        <h3>Text found inside documents</h3>
+        <div id="content-list"></div>
+      </section>
+
+      <div id="drop-overlay" class="d-drop hidden"><div>Drop to upload to <b id="drop-target">My Drive</b></div></div>
+    </main>
+  </div>
+
+  <!-- hidden pickers -->
+  <input type="file" id="pick-files" multiple hidden>
+  <input type="file" id="pick-dir" webkitdirectory multiple hidden>
+
+  <!-- context menu (shared by every item) -->
+  <div id="ctx" class="d-menu hidden" role="menu"></div>
+
+  <!-- uploads panel -->
+  <section id="uploads" class="d-uploads hidden" aria-live="polite">
+    <header>
+      <span id="up-title">Uploads</span>
+      <span class="grow"></span>
+      <button id="up-collapse" class="d-x" aria-label="Collapse">▾</button>
+      <button id="up-close" class="d-x" aria-label="Close">✕</button>
+    </header>
+    <div id="up-list"></div>
+  </section>
+
+  <!-- preview -->
+  <div id="preview" class="d-preview hidden" role="dialog" aria-modal="true">
+    <header>
+      <button id="pv-close" class="d-x" aria-label="Close preview">✕</button>
+      <span id="pv-name" class="pv-name"></span>
+      <span class="grow"></span>
+      <a id="pv-open" class="d-x" target="_blank" rel="noopener" title="Open in new tab">↗</a>
+      <a id="pv-download" class="d-x" title="Download">⬇</a>
+    </header>
+    <button id="pv-prev" class="pv-nav pv-prev" aria-label="Previous">‹</button>
+    <div id="pv-body" class="pv-body"></div>
+    <button id="pv-next" class="pv-nav pv-next" aria-label="Next">›</button>
+  </div>
+
+  <!-- generic dialog (prompt / confirm / move) -->
+  <div id="dialog" class="d-dialog-wrap hidden">
+    <form id="dialog-form" class="d-dialog" method="dialog">
+      <h3 id="dlg-title"></h3>
+      <div id="dlg-body"></div>
+      <div class="d-dialog-actions">
+        <button type="button" id="dlg-cancel" class="btn-secondary">Cancel</button>
+        <button type="submit" id="dlg-ok">OK</button>
+      </div>
+    </form>
+  </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
-
-  <script>
-    const $ = (sel) => document.querySelector(sel);
-    let activeTag = null;
-
-    // ---- theme ----
-    function currentlyDark() {
-      return document.documentElement.getAttribute("data-theme") === "dark";
-    }
-    function updateThemeIcon() {
-      $("#theme-toggle").textContent = currentlyDark() ? "☀️" : "🌙";
-    }
-    $("#theme-toggle").addEventListener("click", () => {
-      const dark = !currentlyDark();
-      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-      localStorage.setItem("theme", dark ? "dark" : "light");
-      updateThemeIcon();
-    });
-    updateThemeIcon();
-
-    // ---- helpers ----
-    function escapeHtml(s) {
-      return s.replace(/[&<>"']/g, (c) => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-      }[c]));
-    }
-    const MARK_OPEN = String.fromCharCode(2);
-    const MARK_CLOSE = String.fromCharCode(3);
-    function renderSnippet(snippet) {
-      return escapeHtml(snippet)
-        .split(MARK_OPEN).join("<mark>")
-        .split(MARK_CLOSE).join("</mark>");
-    }
-    function tagsHtml(tags) {
-      if (!tags || !tags.length) return "";
-      return '<span class="tags">' + tags.map((t) =>
-        `<button class="tag" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}</button>`
-      ).join("") + "</span>";
-    }
-    // Timestamps are stored as naive UTC ("2026-07-13T09:15:00" or with a
-    // space); normalize and mark them Z so the browser converts to local time.
-    function relTime(iso) {
-      if (!iso) return "";
-      const then = new Date(iso.replace(" ", "T") + "Z");
-      if (isNaN(then)) return "";
-      const s = (Date.now() - then.getTime()) / 1000;
-      if (s < 60) return "just now";
-      if (s < 3600) return Math.floor(s / 60) + "m ago";
-      if (s < 86400) return Math.floor(s / 3600) + "h ago";
-      if (s < 7 * 86400) return Math.floor(s / 86400) + "d ago";
-      const opts = { month: "short", day: "numeric" };
-      if (then.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
-      return then.toLocaleDateString(undefined, opts);
-    }
-    function setStatus(el, msg, kind) {
-      el.textContent = msg;
-      el.className = "status" + (kind ? " " + kind : "");
-    }
-    function toast(msg, kind) {
-      const el = document.createElement("div");
-      el.className = "toast" + (kind ? " " + kind : "");
-      el.textContent = msg;
-      $("#toasts").appendChild(el);
-      setTimeout(() => el.classList.add("show"), 10);
-      setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 300); }, 3200);
-    }
-    // Any 401 means the session expired — bounce to the login page.
-    async function api(url, opts) {
-      const res = await fetch(url, opts);
-      if (res.status === 401) { window.location = "/login"; throw new Error("unauthorized"); }
-      return res;
-    }
-
-    // ---- tag filtering ----
-    function setTagFilter(tag) {
-      activeTag = tag;
-      const bar = $("#tag-filter");
-      if (tag) {
-        bar.classList.remove("hidden");
-        bar.innerHTML = `Filtering by <span class="tag active">#${escapeHtml(tag)}</span> ` +
-          `<button id="clear-tag" class="link-btn">clear</button>`;
-        $("#clear-tag").addEventListener("click", () => setTagFilter(null));
-      } else {
-        bar.classList.add("hidden");
-        bar.innerHTML = "";
-      }
-      loadDocuments();
-      if ($("#search-input").value.trim()) runSearch($("#search-input").value);
-    }
-    // Delegate clicks on any tag chip or shelf header (both carry data-tag).
-    document.addEventListener("click", (e) => {
-      const t = e.target.closest("[data-tag]");
-      if (t) { e.preventDefault(); setTagFilter(t.dataset.tag); }
-    });
-
-    // ---- search ----
-    async function runSearch(q) {
-      const status = $("#search-status");
-      const results = $("#results");
-      if (!q.trim()) { results.innerHTML = ""; setStatus(status, ""); return; }
-      setStatus(status, "Searching…");
-      try {
-        let url = "/search?q=" + encodeURIComponent(q);
-        if (activeTag) url += "&tag=" + encodeURIComponent(activeTag);
-        const data = await (await api(url)).json();
-        if (!data.count) {
-          results.innerHTML = "";
-          setStatus(status, "No matches found" + (activeTag ? ` in #${activeTag}` : "") + ".");
-          return;
-        }
-        setStatus(status, `${data.count} matching paragraph${data.count === 1 ? "" : "s"}.`);
-        results.innerHTML = data.results.map((r) => `
-          <article class="result">
-            <div class="result-meta">
-              <span class="badge badge-${escapeHtml(r.source_type)}">${escapeHtml(r.source_type)}</span>
-              <span class="result-title">${escapeHtml(r.title)}</span>
-              ${tagsHtml(r.tags)}
-            </div>
-            <p class="result-snippet clamp">${renderSnippet(r.snippet)}</p>
-          </article>
-        `).join("");
-        // Click a snippet to expand/collapse long paragraphs.
-        results.querySelectorAll(".result-snippet").forEach((p) => {
-          p.addEventListener("click", () => p.classList.toggle("clamp"));
-        });
-      } catch (e) {
-        if (e.message !== "unauthorized") setStatus(status, "Search failed.", "error");
-      }
-    }
-    $("#search-form").addEventListener("submit", (e) => {
-      e.preventDefault();
-      runSearch($("#search-input").value);
-    });
-    // Live search: run as you type (debounced), clear results when emptied.
-    let searchTimer = null;
-    $("#search-input").addEventListener("input", (e) => {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => runSearch(e.target.value), 300);
-    });
-    // "/" focuses search from anywhere outside a form field.
-    document.addEventListener("keydown", (e) => {
-      const inField = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
-      if (e.key === "/" && !inField && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault();
-        $("#search-input").focus();
-        $("#search-input").select();
-      }
-    });
-
-    // ---- add note ----
-    $("#note-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const content = $("#note-content").value;
-      if (!content.trim()) { toast("Note is empty.", "error"); return; }
-      const btn = e.submitter; btn.disabled = true;
-      try {
-        const res = await api("/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: $("#note-title").value,
-            content,
-            tags: $("#note-tags").value,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) { toast(data.error || "Failed.", "error"); return; }
-        toast(`Saved “${data.title}” (${data.chunks} ¶).`, "ok");
-        $("#note-form").reset();
-        loadDocuments();
-      } catch (e) {
-        if (e.message !== "unauthorized") toast("Save failed.", "error");
-      } finally { btn.disabled = false; }
-    });
-
-    // ---- upload (button + drag & drop, multiple files) ----
-    const dropzone = $("#dropzone");
-    const fileInput = $("#file-input");
-    dropzone.addEventListener("click", () => fileInput.click());
-    fileInput.addEventListener("change", () => uploadFiles(fileInput.files));
-    ["dragenter", "dragover"].forEach((ev) =>
-      dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
-    ["dragleave", "drop"].forEach((ev) =>
-      dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); }));
-    dropzone.addEventListener("drop", (e) => uploadFiles(e.dataTransfer.files));
-
-    async function uploadFiles(fileList) {
-      const files = Array.from(fileList);
-      if (!files.length) return;
-      const tags = $("#upload-tags").value;
-      for (const file of files) {
-        const fd = new FormData();
-        fd.append("file", file);
-        fd.append("tags", tags);
-        toast(`Uploading ${file.name}…`);
-        try {
-          const res = await api("/upload", { method: "POST", body: fd });
-          const data = await res.json();
-          if (!res.ok) { toast(`${file.name}: ${data.error || "failed"}`, "error"); continue; }
-          toast(`Uploaded “${data.title}” (${data.chunks} ¶).`, "ok");
-        } catch (e) {
-          if (e.message !== "unauthorized") toast(`${file.name}: upload failed.`, "error");
-        }
-      }
-      fileInput.value = "";
-      loadDocuments();
-    }
-
-    // ---- documents list ----
-    function docCardHtml(d) {
-      return `
-        <div class="doc-card${d.pinned ? " pinned" : ""}" data-open="${d.id}" role="link" tabindex="0" title="Open in editor">
-          <div class="doc-card-head">
-            <span class="badge badge-${escapeHtml(d.source_type)}">${escapeHtml(d.source_type)}</span>
-            <span class="doc-card-actions">
-              <button class="doc-pin${d.pinned ? " on" : ""}" data-pin="${d.id}"
-                title="${d.pinned ? "Unpin" : "Pin to top"}" aria-label="${d.pinned ? "Unpin" : "Pin to top"}">${d.pinned ? "★" : "☆"}</button>
-              <button class="doc-del" data-id="${d.id}" title="Delete" aria-label="Delete">✕</button>
-            </span>
-          </div>
-          <h3 class="doc-card-title">${escapeHtml(d.title)}</h3>
-          ${d.excerpt ? `<p class="doc-card-excerpt">${escapeHtml(d.excerpt)}</p>` : ""}
-          <div class="doc-card-foot">
-            ${tagsHtml(d.tags)}
-            <span class="doc-card-count">${relTime(d.updated_at)} · ${d.chunk_count} ¶</span>
-          </div>
-        </div>`;
-    }
-
-    function wireCards(scope) {
-      scope.querySelectorAll(".doc-card").forEach((card) => {
-        const open = () => { window.location = "/editor/" + card.dataset.open; };
-        card.addEventListener("click", (e) => {
-          if (e.target.closest(".doc-del") || e.target.closest(".doc-pin") || e.target.closest(".tag")) return;
-          open();
-        });
-        card.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" && e.target === card) open();
-        });
-      });
-      scope.querySelectorAll(".doc-del").forEach((btn) =>
-        btn.addEventListener("click", (e) => { e.stopPropagation(); deleteDocument(btn.dataset.id); }));
-      scope.querySelectorAll(".doc-pin").forEach((btn) =>
-        btn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(btn.dataset.pin); }));
-    }
-
-    async function togglePin(id) {
-      try {
-        const res = await api(`/document/${id}/pin`, { method: "POST" });
-        const d = await res.json();
-        if (!res.ok) { toast(d.error || "Failed.", "error"); return; }
-        toast(d.pinned ? "Pinned to top." : "Unpinned.", "ok");
-        loadDocuments();
-      } catch (e) {
-        if (e.message !== "unauthorized") toast("Pin failed.", "error");
-      }
-    }
-
-    // Group documents into shelves by tag. A document with several tags appears
-    // on each matching shelf; untagged documents fall onto an "Uncategorized"
-    // shelf, which always sorts last. Pinned documents also get a "Pinned"
-    // shelf that always sorts first.
-    const UNCATEGORIZED = "Uncategorized";
-    const PINNED_SHELF = "\x00pinned";   // sentinel; never collides with a real tag
-    function shelvesFrom(docs) {
-      const byTag = new Map();
-      for (const d of docs) {
-        const shelves = (d.tags && d.tags.length) ? d.tags : [UNCATEGORIZED];
-        for (const name of shelves) {
-          if (!byTag.has(name)) byTag.set(name, []);
-          byTag.get(name).push(d);
-        }
-      }
-      const out = [...byTag.entries()].sort((a, b) => {
-        if (a[0] === UNCATEGORIZED) return 1;
-        if (b[0] === UNCATEGORIZED) return -1;
-        return a[0].localeCompare(b[0]);
-      });
-      const pinned = docs.filter((d) => d.pinned);
-      if (pinned.length) out.unshift([PINNED_SHELF, pinned]);
-      return out;
-    }
-
-    function shelfHtml(name, docs) {
-      let label;
-      if (name === PINNED_SHELF) {
-        label = `<span class="shelf-name muted">📌 Pinned</span>`;
-      } else if (name === UNCATEGORIZED) {
-        label = `<span class="shelf-name muted">📦 ${escapeHtml(name)}</span>`;
-      } else {
-        label = `<button class="shelf-name" data-tag="${escapeHtml(name)}" title="Filter by #${escapeHtml(name)}">📚 ${escapeHtml(name)}</button>`;
-      }
-      return `
-        <section class="shelf">
-          <div class="shelf-head">${label}<span class="count-pill">${docs.length}</span></div>
-          <div class="docs-grid">${docs.map(docCardHtml).join("")}</div>
-        </section>`;
-    }
-
-    // ---- sorting ----
-    const SORTS = {
-      updated: (a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""),
-      created: (a, b) => (b.created_at || "").localeCompare(a.created_at || ""),
-      title: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
-    };
-    const sortSelect = $("#doc-sort");
-    sortSelect.value = localStorage.getItem("docSort") || "updated";
-    if (!SORTS[sortSelect.value]) sortSelect.value = "updated";
-    sortSelect.addEventListener("change", () => {
-      localStorage.setItem("docSort", sortSelect.value);
-      renderDocuments();
-    });
-
-    let lastDocs = null;   // cache so sort/tag changes re-render without a refetch
-
-    function renderDocuments() {
-      const box = $("#documents");
-      if (!lastDocs) return;
-      const docs = [...lastDocs].sort(SORTS[sortSelect.value] || SORTS.updated);
-
-      if (!docs.length) {
-        $("#doc-count").textContent = "";
-        box.className = "docs-empty";
-        box.innerHTML = '<p class="muted">Nothing here yet. Create a document, jot a quick note, or upload a file to get started.</p>';
-        return;
-      }
-
-      if (activeTag) {
-        // Filtered to one shelf: a flat grid of just that category.
-        const matching = docs.filter((d) => (d.tags || []).includes(activeTag));
-        $("#doc-count").textContent = `${matching.length} document${matching.length === 1 ? "" : "s"}`;
-        if (!matching.length) {
-          box.className = "docs-empty";
-          box.innerHTML = `<p class="muted">No documents tagged #${escapeHtml(activeTag)}.</p>`;
-          return;
-        }
-        box.className = "docs-grid";
-        box.innerHTML = matching.map(docCardHtml).join("");
-      } else {
-        // Library view: one shelf per category.
-        $("#doc-count").textContent = `${docs.length} document${docs.length === 1 ? "" : "s"}`;
-        box.className = "shelves";
-        box.innerHTML = shelvesFrom(docs).map(([name, ds]) => shelfHtml(name, ds)).join("");
-      }
-      wireCards(box);
-    }
-
-    async function loadDocuments() {
-      const box = $("#documents");
-      try {
-        const data = await (await api("/documents")).json();
-        lastDocs = data.documents;
-        renderDocuments();
-      } catch (e) {
-        if (e.message !== "unauthorized") box.innerHTML = '<p class="status error">Could not load documents.</p>';
-      }
-    }
-
-    async function deleteDocument(id) {
-      if (!confirm("Delete this document and all its paragraphs?")) return;
-      try {
-        await api("/delete/" + id, { method: "POST" });
-        toast("Deleted.", "ok");
-        loadDocuments();
-        if ($("#search-input").value.trim()) runSearch($("#search-input").value);
-      } catch (e) {
-        if (e.message !== "unauthorized") toast("Delete failed.", "error");
-      }
-    }
-
-    loadDocuments();
-  </script>
+  <script src="{{ url_for('static', filename='drive.js') }}?v={{ css_version }}"></script>
 </body>
 </html>

@@ -18,8 +18,11 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 
 ## Features
 
+- **Drive (Google-Drive-style storage)** — store *any* file: photos, videos, music, PDFs, Office files, archives. Folders with breadcrumbs, grid/list views, sort, drag-and-drop upload (files *and* whole folders), drag items onto folders to move them, rename, star, multi-select, and a Trash with restore (auto-emptied after 30 days)
+- **Previews** — photos (with thumbnails), video and audio streaming with seeking, PDFs in-page, text/code and Word files as text; arrow keys step through a folder
+- **Big, resumable uploads** — files up to 20 GB upload in 16 MB chunks with progress, speed and ETA, and retry automatically through a flaky connection
+- **One search for everything** — matches file/folder names *and* the text inside notes, PDFs, Word and text files
 - **Rich editor** — a full-page, Docs-style writing surface with a Markdown formatting toolbar (headings, bold/italic, lists, links, code), live preview, autosave, a word-count status bar, and a distraction-free focus mode
-- **Upload files** — PDF, DOCX, TXT supported (drag-and-drop or click)
 - **Per-document format tracking** — typed notes can be Markdown; uploaded and plain docs stay verbatim. A single Markdown→HTML engine drives the preview, print view, and both exports so they always match
 - **Export to PDF & Word** — download any document as a `.pdf` or `.docx`
 - **Paragraph-level search** — finds the exact section of a document, not just the file name
@@ -29,7 +32,6 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 - **Sort & recency** — sort the library by last edited, created, or title; cards show an excerpt and "edited N ago"
 - **Highlighted results** — matching words are highlighted in the result snippet
 - **Tags / collections** — label documents, then filter search and the list by tag
-- **Library view** — the home page groups your documents into shelves by category (tag), like science, language, history, coding. A document with several tags appears on each shelf; untagged ones land on an "Uncategorized" shelf. Click a shelf heading to filter down to it
 - **Dark mode** — toggle that remembers your choice and respects your system preference
 - **Password protection** — optional single-password gate so it can run on the internet for just you
 - **Delete documents** — remove notes or files you no longer need

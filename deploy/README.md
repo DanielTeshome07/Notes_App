@@ -137,8 +137,14 @@ kubectl -n noteapp create secret generic noteapp-secret \
   --from-literal=flask-secret-key="$(openssl rand -hex 32)"
 kubectl -n noteapp rollout restart deploy/noteapp
 
-# Back up the database
-kubectl -n noteapp exec deploy/noteapp -- cat /data/notes.db > notes-backup.db
+# Back up everything: a consistent DB snapshot (the DB runs in WAL mode, so a
+# plain `cat notes.db` can miss recent writes) plus the Drive files.
+TS=$(date +%Y%m%d-%H%M%S); mkdir -p backups
+kubectl -n noteapp exec deploy/noteapp -- python -c \
+  "import sqlite3;s=sqlite3.connect('/data/notes.db');d=sqlite3.connect('/tmp/bk.db');s.backup(d);d.close()"
+kubectl -n noteapp exec deploy/noteapp -- cat /tmp/bk.db > backups/notes-$TS.db
+kubectl -n noteapp exec deploy/noteapp -- rm /tmp/bk.db
+kubectl -n noteapp exec deploy/noteapp -- tar -C /data -cf - files thumbs > backups/files-$TS.tar
 ```
 
 ## Notes
@@ -149,5 +155,12 @@ kubectl -n noteapp exec deploy/noteapp -- cat /data/notes.db > notes-backup.db
 - **Data persists** across restarts/redeploys on the `noteapp-data` PVC
   (`local-path`, on the `pop-os` node). The `tags` migration runs at startup, so
   upgrading an existing DB is safe.
+- **Drive storage.** Uploaded files live under `/data/files/<random key>`
+  (thumbnails in `/data/thumbs`); SQLite only stores metadata. The PVC is
+  `local-path`, which ignores its 1Gi size request, so Drive can fill the
+  node's disk (the app refuses uploads that would leave < 2 GB free).
+  Big uploads go up in 16 MB chunks (`UPLOAD_CHUNK_MB`) because the Cloudflare
+  tunnel rejects request bodies over ~100 MB; `MAX_FILE_GB` caps one file.
+- **Trash** keeps deleted items for 30 days, then purges them (rows + blobs).
 - **Encryption:** HTTPS in transit (Cloudflare) + the password gate. The DB is
   stored as plain SQLite on the volume — no at-rest disk encryption.

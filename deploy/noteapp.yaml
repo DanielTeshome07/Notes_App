@@ -29,6 +29,9 @@ metadata:
     app: noteapp
 spec:
   replicas: 1
+  # NOTE: local-path ignores the 1Gi request — files land on the node's disk
+  # (/var/lib/rancher/k3s/storage) and can use all of its free space. The class
+  # doesn't support expansion, so don't edit the request.
   # Recreate, not RollingUpdate: the SQLite DB lives on a single ReadWriteOnce
   # volume that only one pod may mount, and only one writer is safe.
   strategy:
@@ -56,6 +59,12 @@ spec:
               value: /data
             - name: MAX_UPLOAD_MB
               value: "32"
+            # Drive: browser uploads arrive in chunks of this size (must stay
+            # well under Cloudflare's ~100MB request-body cap).
+            - name: UPLOAD_CHUNK_MB
+              value: "16"
+            - name: MAX_FILE_GB
+              value: "20"
             - name: APP_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -87,7 +96,7 @@ spec:
               memory: 96Mi
             limits:
               cpu: 500m
-              memory: 384Mi
+              memory: 512Mi   # thumbnailing large photos / PDFs
       volumes:
         - name: data
           persistentVolumeClaim:

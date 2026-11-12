@@ -19,5 +19,7 @@ USER appuser
 
 EXPOSE 5000
 
-# Single worker: SQLite + FTS5 is a single-writer file on one ReadWriteOnce volume.
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "1", "--timeout", "60", "app:app"]
+# One process (SQLite on one ReadWriteOnce volume), but several threads so a
+# long video stream or upload chunk doesn't block every other request.
+# Long timeout: a slow chunk over a weak connection can take minutes.
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "1", "--worker-class", "gthread", "--threads", "8", "--timeout", "300", "app:app"]
