@@ -23,7 +23,10 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 - **Per-document format tracking** — typed notes can be Markdown; uploaded and plain docs stay verbatim. A single Markdown→HTML engine drives the preview, print view, and both exports so they always match
 - **Export to PDF & Word** — download any document as a `.pdf` or `.docx`
 - **Paragraph-level search** — finds the exact section of a document, not just the file name
+- **Live search** — results appear as you type; press `/` anywhere to jump to the search box
 - **Phrase search** — search `"exact phrase"` to match words in order
+- **Pinned documents** — star any document to float it to a Pinned shelf at the top of the library
+- **Sort & recency** — sort the library by last edited, created, or title; cards show an excerpt and "edited N ago"
 - **Highlighted results** — matching words are highlighted in the result snippet
 - **Tags / collections** — label documents, then filter search and the list by tag
 - **Library view** — the home page groups your documents into shelves by category (tag), like science, language, history, coding. A document with several tags appears on each shelf; untagged ones land on an "Uncategorized" shelf. Click a shelf heading to filter down to it
@@ -76,9 +79,11 @@ documents
   title       TEXT          -- file name or first line of note
   source_type TEXT          -- 'note', 'pdf', 'docx', 'txt'
   created_at  TIMESTAMP
+  updated_at  TIMESTAMP     -- last edit (for "edited N ago" and recency sort)
   content     TEXT          -- full document text (for editing and export)
   tags        TEXT          -- packed tag list
   format      TEXT          -- 'plain' or 'markdown' (how content renders/exports)
+  pinned      INTEGER       -- 1 = floats to the Pinned shelf at the top
 
 chunks
   id          INTEGER PRIMARY KEY
@@ -149,4 +154,5 @@ walkthrough.
 - [x] Export documents to PDF and Word
 - [x] CI pipeline — push to `main` auto-builds + pushes the image ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)); deploy is a manual `kubectl set image` on the cluster box
 - [x] Library view — home groups documents into shelves by category (tag)
+- [x] Pinned documents, live search, library sorting, card excerpts + edit times
 - [ ] Hierarchical folders / nested collections

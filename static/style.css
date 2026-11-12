@@ -383,6 +383,10 @@ body.editor-page {
 }
 .paper {
   /* Real A4: 21cm × 29.7cm with ~2.5cm document margins. */
+  /* flex none: as a flex item of .writing-scroll the sheet would otherwise
+     shrink to its min-height (one page) and long documents would spill off
+     the white paper onto the dark desk. */
+  flex: none;
   width: 21cm;
   max-width: 100%;
   min-height: 29.7cm;
@@ -392,15 +396,17 @@ body.editor-page {
   border-radius: 2px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 14px 40px rgba(0, 0, 0, 0.2);
   /* White sheet + a faint guide line at every A4 page boundary (29.7cm),
-     so a multi-page document reads like stacked sheets. */
+     so a multi-page document reads like stacked sheets. Drawn as a repeating
+     29.7cm-tall tile that is transparent except for its last pixel:
+     repeating-linear-gradient with cm-based calc() stops misrenders in
+     Chromium, flooding everything after the first page with the line color. */
   background-color: var(--paper);
-  background-image: repeating-linear-gradient(
+  background-image: linear-gradient(
     to bottom,
-    transparent 0,
-    transparent calc(29.7cm - 1px),
-    var(--page-line) calc(29.7cm - 1px),
-    var(--page-line) 29.7cm
+    transparent calc(100% - 1px),
+    var(--page-line) calc(100% - 1px)
   );
+  background-size: 100% 29.7cm;
 }
 /* Fields are transparent on the sheet and inherit the paper's dark ink so they
    stay readable in dark mode (where var(--ink) would be light). The .paper
@@ -493,7 +499,18 @@ body.focus .focus-exit { display: inline-flex; }
 .btn-primary:hover { filter: brightness(1.05); }
 
 /* Hero search */
-.search-hero { margin: 1.4rem 0 1.8rem; }
+.search-hero { margin: 1.6rem 0 1.8rem; }
+.hero-title {
+  margin: 0 0 0.9rem;
+  font-size: clamp(1.4rem, 3.4vw, 1.9rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(90deg, var(--ink), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
 .search-box {
   display: flex; align-items: center; gap: 0.5rem;
   background: var(--card); border: 1px solid var(--line); border-radius: 14px;
@@ -527,8 +544,17 @@ body.focus .focus-exit { display: inline-flex; }
 
 /* Documents grid */
 .docs-section { margin-top: 0.5rem; }
-.docs-section .section-head { align-items: center; margin-bottom: 0.9rem; }
+.docs-section .section-head { align-items: center; margin-bottom: 0.9rem; gap: 0.6rem; }
 .docs-section .section-head h2 { margin: 0; }
+.docs-section .section-head .grow { flex: 1; }
+.sort-label { color: var(--muted); font-size: 0.8rem; }
+.sort-select {
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.32rem 0.5rem; font-size: 0.82rem; font-family: inherit;
+  cursor: pointer;
+}
+.sort-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .count-pill {
   background: var(--chip); color: var(--chip-ink);
   padding: 0.12rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 700;
@@ -561,23 +587,49 @@ button.shelf-name:hover { color: var(--accent); }
 .doc-card:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: 0 8px 22px rgba(20, 30, 60, 0.1); }
 .doc-card:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .doc-card-head { display: flex; align-items: center; justify-content: space-between; }
+.doc-card-actions { display: inline-flex; align-items: center; gap: 0.15rem; }
 .doc-del {
   background: transparent; color: var(--muted); border: none; padding: 0.1rem 0.4rem;
   border-radius: 6px; font-size: 0.85rem; opacity: 0; transition: opacity 0.12s ease;
 }
 .doc-card:hover .doc-del, .doc-card:focus-within .doc-del { opacity: 1; }
 .doc-del:hover { background: var(--error); color: #fff; }
+.doc-pin {
+  background: transparent; color: var(--muted); border: none; padding: 0.1rem 0.4rem;
+  border-radius: 6px; font-size: 0.9rem; opacity: 0; transition: opacity 0.12s ease;
+}
+.doc-card:hover .doc-pin, .doc-card:focus-within .doc-pin { opacity: 1; }
+.doc-pin:hover { background: var(--chip); color: #d97706; }
+.doc-pin.on { opacity: 1; color: #d97706; }
+.doc-card.pinned { border-color: color-mix(in srgb, #d97706 45%, var(--line)); }
 .doc-card-title {
-  margin: 0; font-size: 0.98rem; font-weight: 600; line-height: 1.35; flex: 1;
+  margin: 0; font-size: 0.98rem; font-weight: 600; line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.doc-card-excerpt {
+  margin: -0.25rem 0 0; color: var(--muted); font-size: 0.82rem; line-height: 1.45; flex: 1;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .doc-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: auto; }
 .doc-card-foot .tags { flex: 1; overflow: hidden; }
 .doc-card-count { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
 
+/* Motion: cards and results ease in as they render */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.doc-card, .result, .shelf { animation: fade-up 0.22s ease both; }
+@media (prefers-reduced-motion: reduce) {
+  .doc-card, .result, .shelf { animation: none; }
+  .doc-card:hover { transform: none; }
+}
+
+/* Slimmer, theme-aware scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--chip-ink) transparent; }
+
 @media (max-width: 720px) {
   .capture-grid { grid-template-columns: 1fr; }
-  .appbar-actions .btn-primary span { }
 }
 @media (max-width: 460px) {
   .btn-primary { padding: 0.5rem 0.7rem; font-size: 0; gap: 0; }   /* icon-only on tiny screens */

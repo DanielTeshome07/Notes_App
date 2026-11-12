@@ -19,7 +19,7 @@ import io
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from html.parser import HTMLParser
 
@@ -52,6 +52,16 @@ AUTH_ENABLED = bool(APP_PASSWORD)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
+
+
+@app.context_processor
+def asset_version():
+    """Cache-buster for style.css: browsers refetch it whenever it changes."""
+    try:
+        v = int(os.path.getmtime(os.path.join(BASE_DIR, "static", "style.css")))
+    except OSError:
+        v = 0
+    return {"css_version": v}
 
 
 # --------------------------------------------------------------------------- #
@@ -132,8 +142,24 @@ def init_db():
             "ALTER TABLE documents ADD COLUMN format TEXT NOT NULL DEFAULT 'plain'"
         )
 
+    # Migration: track the last edit separately from creation, so the library
+    # can show "edited N ago" and sort by recency. Pre-existing rows inherit
+    # their created_at as a best guess.
+    if "updated_at" not in cols:
+        db.execute("ALTER TABLE documents ADD COLUMN updated_at TIMESTAMP")
+        db.execute("UPDATE documents SET updated_at = created_at WHERE updated_at IS NULL")
+
+    # Migration: pinned documents float to the top of the library.
+    if "pinned" not in cols:
+        db.execute("ALTER TABLE documents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+
     db.commit()
     db.close()
+
+
+def utcnow_iso():
+    """Naive-UTC ISO timestamp, matching the format of existing rows."""
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 # --------------------------------------------------------------------------- #
@@ -168,8 +194,10 @@ def login():
             session["authed"] = True
             session.permanent = True
             dest = request.args.get("next") or url_for("index")
-            # Only allow same-site relative redirects.
-            if not dest.startswith("/"):
+            # Only allow same-site relative redirects. "//host" and "/\host"
+            # are protocol-relative and would leave the site, so reject any
+            # second slash/backslash too.
+            if not re.match(r"^/(?![/\\])", dest):
                 dest = url_for("index")
             return redirect(dest)
         error = "Incorrect password."
@@ -270,17 +298,11 @@ def store_document(title, source_type, content, paragraphs, tags, fmt="plain"):
     Returns the new doc id.
     """
     db = get_db()
+    now = utcnow_iso()
     cur = db.execute(
-        "INSERT INTO documents (title, source_type, created_at, tags, content, format) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (
-            title,
-            source_type,
-            datetime.utcnow().isoformat(timespec="seconds"),
-            pack_tags(tags),
-            content,
-            fmt,
-        ),
+        "INSERT INTO documents (title, source_type, created_at, updated_at, tags, content, format) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (title, source_type, now, now, pack_tags(tags), content, fmt),
     )
     doc_id = cur.lastrowid
     _index_chunks(db, doc_id, paragraphs)
@@ -295,8 +317,8 @@ def update_document(doc_id, title, content, paragraphs, tags, fmt="plain"):
     """
     db = get_db()
     db.execute(
-        "UPDATE documents SET title = ?, content = ?, tags = ?, format = ? WHERE id = ?",
-        (title, content, pack_tags(tags), fmt, doc_id),
+        "UPDATE documents SET title = ?, content = ?, tags = ?, format = ?, updated_at = ? WHERE id = ?",
+        (title, content, pack_tags(tags), fmt, utcnow_iso(), doc_id),
     )
     _index_chunks(db, doc_id, paragraphs)
     db.commit()
@@ -688,12 +710,16 @@ def list_documents():
     db = get_db()
     rows = db.execute(
         """
-        SELECT d.id, d.title, d.source_type, d.created_at, d.tags,
-               COUNT(c.id) AS chunk_count
+        SELECT d.id, d.title, d.source_type, d.created_at, d.updated_at,
+               d.tags, d.pinned,
+               COUNT(c.id) AS chunk_count,
+               (SELECT substr(content, 1, 160) FROM chunks
+                WHERE doc_id = d.id ORDER BY chunk_index LIMIT 1) AS excerpt
         FROM documents d
         LEFT JOIN chunks c ON c.doc_id = d.id
         GROUP BY d.id
-        ORDER BY d.created_at DESC, d.id DESC
+        ORDER BY d.pinned DESC,
+                 COALESCE(d.updated_at, d.created_at) DESC, d.id DESC
         """
     ).fetchall()
     return jsonify(
@@ -704,8 +730,11 @@ def list_documents():
                     "title": r["title"],
                     "source_type": r["source_type"],
                     "created_at": r["created_at"],
+                    "updated_at": r["updated_at"] or r["created_at"],
                     "chunk_count": r["chunk_count"],
                     "tags": unpack_tags(r["tags"]),
+                    "pinned": bool(r["pinned"]),
+                    "excerpt": r["excerpt"] or "",
                 }
                 for r in rows
             ]
@@ -781,6 +810,20 @@ def save_document(doc_id):
     tags = normalize_tags(data.get("tags"))
     update_document(doc_id, title, content, paragraphs, tags, fmt)
     return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags, "format": fmt})
+
+
+@app.route("/document/<int:doc_id>/pin", methods=["POST"])
+@login_required
+def toggle_pin(doc_id):
+    """Toggle a document's pinned flag; pinned docs float to the library top."""
+    db = get_db()
+    row = db.execute("SELECT pinned FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    if row is None:
+        return jsonify({"error": "Document not found."}), 404
+    pinned = 0 if row["pinned"] else 1
+    db.execute("UPDATE documents SET pinned = ? WHERE id = ?", (pinned, doc_id))
+    db.commit()
+    return jsonify({"id": doc_id, "pinned": bool(pinned)})
 
 
 @app.route("/render", methods=["POST"])
