@@ -18,6 +18,8 @@ Everything is stored locally in a SQLite database (`notes.db`). No account, no i
 
 ## Features
 
+- **Automatic sorting** — the top of the drive is six category folders: Photos, Videos, Music, Documents, Notes, Other. Every upload is identified from its actual bytes (not just its extension — a PNG named `.jpg` or a video named `.bin` is still recognised) and filed into its category. Drop a mixed folder and it is split: `Photos/Trip`, `Videos/Trip`, `Documents/Trip`. Items can't be moved into the wrong category
+- **Photo gallery** — the Photos category shows a thumbnail gallery grouped by the month each photo was taken (from its EXIF data)
 - **Drive (Google-Drive-style storage)** — store *any* file: photos, videos, music, PDFs, Office files, archives. Folders with breadcrumbs, grid/list views, sort, drag-and-drop upload (files *and* whole folders), drag items onto folders to move them, rename, star, multi-select, and a Trash with restore (auto-emptied after 30 days)
 - **Previews** — photos (with thumbnails), video and audio streaming with seeking, PDFs in-page, text/code and Word files as text; arrow keys step through a folder
 - **Big, resumable uploads** — files up to 20 GB upload in 16 MB chunks with progress, speed and ETA, and retry automatically through a flaky connection

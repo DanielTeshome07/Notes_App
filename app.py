@@ -21,8 +21,10 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from html.parser import HTMLParser
@@ -240,13 +242,33 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_documents_file ON documents(file_id);
         """
     )
+    # Migration (categories): six system folders sit at the top of the drive
+    # (folders.category set); every file is filed under the one its content
+    # belongs to. files.sniffed marks files whose type was detected from
+    # their bytes; uploads.rel_dir carries a dropped folder's sub-path.
+    fcols = {row[1] for row in db.execute("PRAGMA table_info(folders)")}
+    if "category" not in fcols:
+        db.execute("ALTER TABLE folders ADD COLUMN category TEXT")
+    flcols = {row[1] for row in db.execute("PRAGMA table_info(files)")}
+    if "sniffed" not in flcols:
+        db.execute("ALTER TABLE files ADD COLUMN sniffed INTEGER NOT NULL DEFAULT 0")
+    if "taken_at" not in flcols:
+        db.execute("ALTER TABLE files ADD COLUMN taken_at TIMESTAMP")
+    ucols = {row[1] for row in db.execute("PRAGMA table_info(uploads)")}
+    if "rel_dir" not in ucols:
+        db.execute("ALTER TABLE uploads ADD COLUMN rel_dir TEXT NOT NULL DEFAULT ''")
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_category "
+               "ON folders(category) WHERE category IS NOT NULL")
+
     # Persistent for the DB file: concurrent readers don't block on a writer.
     db.execute("PRAGMA journal_mode=WAL")
 
     db.commit()
-    db.close()
     for d in (FILES_DIR, THUMBS_DIR, UPLOADS_DIR):
         os.makedirs(d, exist_ok=True)
+    db.row_factory = sqlite3.Row
+    organize(db)
+    db.close()
 
 
 def utcnow_iso():
@@ -690,10 +712,12 @@ def add_note():
 
     tags = normalize_tags(data.get("tags"))
     doc_id = store_document(title, "note", content, paragraphs, tags, fmt)
-    folder_id = _live_folder_id(get_db(), data.get("folder_id"))
-    if folder_id is not None:
-        get_db().execute("UPDATE documents SET folder_id = ? WHERE id = ?", (folder_id, doc_id))
-        get_db().commit()
+    db = get_db()
+    folder_id = _live_folder_id(db, data.get("folder_id"))
+    if folder_id is None or _root_cat_map(db).get(folder_id) not in NOTE_CATEGORIES:
+        folder_id = category_roots(db)["notes"]
+    db.execute("UPDATE documents SET folder_id = ? WHERE id = ?", (folder_id, doc_id))
+    db.commit()
     return jsonify({"id": doc_id, "title": title, "chunks": len(paragraphs), "tags": tags,
                     "format": fmt, "folder_id": folder_id}), 201
 
@@ -717,7 +741,8 @@ def upload_file():
     folder_id = _live_folder_id(db, request.form.get("folder_id"))
     tags = normalize_tags(request.form.get("tags"))
     try:
-        info = finalize_file(db, part, file.filename, folder_id, tags)
+        info = finalize_file(db, part, file.filename, folder_id, tags,
+                             clean_rel_dir(request.form.get("rel_dir")))
     finally:
         if os.path.exists(part):
             os.remove(part)
@@ -1042,17 +1067,298 @@ def file_kind(mime, name=""):
         return "audio"
     if mime == "application/pdf":
         return "pdf"
-    if "wordprocessing" in mime or ext in ("doc", "docx", "odt", "rtf"):
+    if ("wordprocessing" in mime or "opendocument.text" in mime or mime in (
+            "application/msword", "application/rtf", "application/epub+zip")
+            or ext in ("doc", "docx", "odt", "rtf", "epub", "pages")):
         return "doc"
     if "spreadsheet" in mime or ext in ("xls", "xlsx", "ods", "csv"):
         return "sheet"
     if "presentation" in mime or ext in ("ppt", "pptx", "odp"):
         return "slides"
-    if ext in ("zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar"):
+    if mime in ("application/zip", "application/gzip", "application/x-7z-compressed",
+                "application/vnd.rar", "application/x-tar") or ext in (
+            "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar"):
         return "archive"
     if mime.startswith("text/") or ext in _TEXTISH_EXT:
         return "text"
     return "other"
+
+
+# ---- categories ------------------------------------------------------------ #
+# System folders at the top of the drive. Files are filed by what they are, so
+# photos and videos never mix with documents.
+CATEGORIES = [
+    ("photos", "Photos"), ("videos", "Videos"), ("music", "Music"),
+    ("documents", "Documents"), ("notes", "Notes"), ("other", "Other"),
+]
+CATEGORY_LABEL = dict(CATEGORIES)
+KIND_CATEGORY = {
+    "image": "photos", "video": "videos", "audio": "music",
+    "pdf": "documents", "doc": "documents", "sheet": "documents", "slides": "documents",
+    "text": "documents", "archive": "other", "other": "other",
+}
+NOTE_CATEGORIES = ("notes", "documents")   # notes may live in either
+_folder_lock = threading.Lock()
+
+
+def file_category(mime, name=""):
+    return KIND_CATEGORY[file_kind(mime, name)]
+
+
+def note_category(source_type):
+    """Editor notes go to Notes; pre-Drive uploaded PDF/DOCX/TXT text to Documents."""
+    return "notes" if source_type == "note" else "documents"
+
+
+def category_roots(db):
+    return {r["category"]: r["id"] for r in
+            db.execute("SELECT id, category FROM folders WHERE category IS NOT NULL")}
+
+
+def _root_cat_map(db):
+    """folder id -> category of the system folder at the top of its tree."""
+    rows = db.execute("SELECT id, parent_id, category FROM folders").fetchall()
+    parent = {r["id"]: r["parent_id"] for r in rows}
+    cat = {r["id"]: r["category"] for r in rows}
+    out = {}
+    for fid in parent:
+        cur, seen = fid, set()
+        while parent.get(cur) is not None and cur not in seen:
+            seen.add(cur)
+            cur = parent[cur]
+        out[fid] = cat.get(cur)
+    return out
+
+
+def ensure_subpath(db, parent, rel):
+    """Find-or-create each folder of `rel` ("Trip/Day 1") under `parent`.
+
+    Locked: parallel uploads of one dropped folder would otherwise each
+    create their own copy of it.
+    """
+    for part in re.split(r"[\\/]+", rel or ""):
+        part = clean_name(part, "")
+        if not part or part in (".", ".."):
+            continue
+        with _folder_lock:
+            row = db.execute(
+                "SELECT id FROM folders WHERE parent_id IS ? AND name = ? AND trashed_at IS NULL",
+                (parent, part),
+            ).fetchone()
+            if row:
+                parent = row["id"]
+            else:
+                now = utcnow_iso()
+                parent = db.execute(
+                    "INSERT INTO folders (name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                    (part, parent, now, now),
+                ).lastrowid
+                db.commit()
+    return parent
+
+
+def clean_rel_dir(raw):
+    parts = [clean_name(p, "") for p in re.split(r"[\\/]+", str(raw or ""))]
+    return "/".join(p for p in parts if p and p not in (".", ".."))[:1000]
+
+
+# ftyp brands (ISO media: MP4/MOV/HEIC/AVIF/M4A all share this container).
+_FTYP = [
+    ("image/heic", {"heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"}),
+    ("image/avif", {"avif", "avis"}),
+    ("video/quicktime", {"qt  "}),
+    ("audio/mp4", {"M4A ", "M4B ", "M4P ", "F4A "}),
+    ("video/3gpp", {"3gp4", "3gp5", "3gp6", "3ge6", "3g2a"}),
+]
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_ZIP_KINDS = [
+    ("word/", DOCX_MIME),
+    ("xl/", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    ("ppt/", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+]
+
+
+def sniff_mime(path, name):
+    """Detect a file's type from its bytes, falling back to its extension.
+
+    The bytes win when the signature is unambiguous, so a PNG named .jpg or a
+    video named .bin still lands in the right category.
+    """
+    ext_mime = mimetypes.guess_type(name)[0]
+    if ext_mime == "application/octet-stream":
+        ext_mime = None
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return ext_mime or "application/octet-stream"
+
+    def ext_if(prefix):
+        return ext_mime if ext_mime and ext_mime.startswith(prefix) else None
+
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF":
+        sub = head[8:12]
+        if sub == b"WEBP":
+            return "image/webp"
+        if sub == b"WAVE":
+            return "audio/wav"
+        if sub == b"AVI ":
+            return "video/x-msvideo"
+    if head[4:8] == b"ftyp":
+        major = head[8:12].decode("latin-1")
+        box = int.from_bytes(head[:4], "big")
+        brands = {major} | {head[i:i + 4].decode("latin-1")
+                            for i in range(16, min(len(head), max(box, 16)), 4)}
+        for mime, names in _FTYP:
+            if major in names:
+                return mime
+        if brands & {"avif", "avis"}:
+            return "image/avif"
+        # Generic isom/mp42: audio-only .m4a files use these too.
+        return ext_if("audio/") or "video/mp4"
+    if head.startswith(b"\x1a\x45\xdf\xa3"):          # Matroska / WebM
+        return ext_if("audio/") or ("video/webm" if b"webm" in head[:64] else "video/x-matroska")
+    if head.startswith(b"OggS"):
+        return "video/ogg" if b"theora" in head[:512] else "audio/ogg"
+    if head.startswith(b"fLaC"):
+        return "audio/flac"
+    if head.startswith(b"ID3"):
+        return "audio/mpeg"
+    if len(head) > 1 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0 and ext_if("audio/"):
+        return ext_mime                                     # bare MP3/AAC frames
+    if head.startswith(b"%PDF-"):
+        return "application/pdf"
+    if head.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(path) as z:
+                names = z.namelist()[:5000]
+                if "mimetype" in names:                     # EPUB / OpenDocument
+                    declared = z.read("mimetype")[:120].decode("ascii", "ignore").strip()
+                    if declared:
+                        return declared
+        except (zipfile.BadZipFile, OSError, KeyError):
+            return ext_mime or "application/zip"
+        for prefix, mime in _ZIP_KINDS:
+            if any(n.startswith(prefix) for n in names):
+                return mime
+        return ext_mime or "application/zip"
+    if head.startswith(b"\x1f\x8b"):
+        return ext_mime if ext_mime in ("application/x-tar", "application/gzip") else "application/gzip"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "application/x-7z-compressed"
+    if head.startswith(b"Rar!"):
+        return "application/vnd.rar"
+    if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):    # legacy Office
+        return ext_mime or "application/x-ole-storage"
+    if head[:4] in (b"II*\x00", b"MM\x00*"):             # TIFF and camera RAW
+        return ext_if("image/") or "image/tiff"
+    if head.startswith(b"BM") and ext_if("image/"):
+        return ext_mime
+    if b"\x00" not in head:
+        try:
+            head.decode("utf-8")
+            is_text = True
+        except UnicodeDecodeError as e:
+            is_text = e.start >= len(head) - 4   # a char cut at the 4KB boundary
+        if is_text:
+            if b"<svg" in head[:2048].lower():
+                return "image/svg+xml"
+            if ext_mime and not ext_mime.startswith(("image/", "video/", "audio/")) \
+                    and ext_mime != "application/pdf":
+                return ext_mime
+            return "text/plain"
+    if ext_mime and ext_mime.startswith(("image/", "video/", "audio/")) or ext_mime == "application/pdf":
+        return "application/octet-stream"   # extension claims media, bytes disagree
+    return ext_mime or "application/octet-stream"
+
+
+def photo_taken_at(path):
+    """EXIF capture time of a photo (camera local time), if present."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            ex = im.getexif()
+            v = ex.get_ifd(0x8769).get(36867) or ex.get(306)
+        if v:
+            return datetime.strptime(str(v).strip()[:19], "%Y:%m:%d %H:%M:%S").isoformat()
+    except Exception:
+        pass
+    return None
+
+
+def _majority_category(db, folder_id):
+    """Category most of a folder tree's files belong to (for orphan folders)."""
+    ids = list(_subtree_ids(db, folder_id))
+    marks = ",".join("?" * len(ids))
+    counts = {}
+    for r in db.execute(f"SELECT mime, name FROM files WHERE folder_id IN ({marks})", ids):
+        c = file_category(r["mime"], r["name"])
+        counts[c] = counts.get(c, 0) + 1
+    for r in db.execute(
+            f"SELECT source_type FROM documents WHERE file_id IS NULL AND folder_id IN ({marks})", ids):
+        c = note_category(r["source_type"])
+        counts[c] = counts.get(c, 0) + 1
+    return max(counts, key=counts.get) if counts else "other"
+
+
+def organize(db):
+    """Make sure every item sits under the category it belongs to.
+
+    Runs at every startup; idempotent. Creates the six category folders,
+    detects the real type of files not yet sniffed, files top-level folders
+    under their dominant category, and moves misplaced files (keeping their
+    sub-folder path) and notes into the right category.
+    """
+    roots = category_roots(db)
+    now = utcnow_iso()
+    for key, label in CATEGORIES:
+        if key not in roots:
+            roots[key] = db.execute(
+                "INSERT INTO folders (name, parent_id, category, created_at, updated_at) "
+                "VALUES (?, NULL, ?, ?, ?)", (label, key, now, now)).lastrowid
+    db.execute("UPDATE folders SET trashed_at = NULL, parent_id = NULL WHERE category IS NOT NULL")
+
+    for r in db.execute("SELECT * FROM files WHERE sniffed = 0").fetchall():
+        path = os.path.join(FILES_DIR, r["storage_key"])
+        if not os.path.exists(path):
+            continue
+        mime = sniff_mime(path, r["name"])
+        has_thumb = r["has_thumb"] or make_thumb(path, r["storage_key"], mime)
+        db.execute("UPDATE files SET mime = ?, sniffed = 1, has_thumb = ? WHERE id = ?",
+                   (mime, int(bool(has_thumb)), r["id"]))
+
+    for r in db.execute(
+            "SELECT id FROM folders WHERE parent_id IS NULL AND category IS NULL").fetchall():
+        db.execute("UPDATE folders SET parent_id = ? WHERE id = ?",
+                   (roots[_majority_category(db, r["id"])], r["id"]))
+
+    rcm = _root_cat_map(db)
+    for r in db.execute("SELECT id, folder_id, mime, name FROM files").fetchall():
+        want = file_category(r["mime"], r["name"])
+        if r["folder_id"] is not None and rcm.get(r["folder_id"]) == want:
+            continue
+        chain = _breadcrumbs(db, r["folder_id"]) if r["folder_id"] is not None else []
+        if chain and chain[0]["id"] in roots.values():
+            chain = chain[1:]
+        target = ensure_subpath(db, roots[want], "/".join(c["name"] for c in chain))
+        db.execute("UPDATE files SET folder_id = ? WHERE id = ?", (target, r["id"]))
+        db.execute("UPDATE documents SET folder_id = ? WHERE file_id = ?", (target, r["id"]))
+        rcm = _root_cat_map(db)
+
+    for r in db.execute(
+            "SELECT id, folder_id, source_type FROM documents WHERE file_id IS NULL").fetchall():
+        if r["folder_id"] is not None and rcm.get(r["folder_id"]) in NOTE_CATEGORIES:
+            continue
+        db.execute("UPDATE documents SET folder_id = ? WHERE id = ?",
+                   (roots[note_category(r["source_type"])], r["id"]))
+    db.commit()
 
 
 def clean_name(raw, fallback="Untitled"):
@@ -1122,8 +1428,10 @@ def _subtree_ids(db, fid):
     return out
 
 
-def folder_json(r, extra=None):
+def folder_json(r, extra=None, rcm=None):
+    cat = r["category"] or (rcm.get(r["id"]) if rcm is not None else None)
     d = {"type": "folder", "id": r["id"], "name": r["name"], "parent_id": r["parent_id"],
+         "system": bool(r["category"]), "cat": cat,
          "starred": bool(r["starred"]), "created_at": r["created_at"],
          "updated_at": r["updated_at"] or r["created_at"], "trashed_at": r["trashed_at"]}
     if extra:
@@ -1136,6 +1444,7 @@ def file_json(r):
             "kind": file_kind(r["mime"], r["name"]), "size": r["size"],
             "folder_id": r["folder_id"], "starred": bool(r["starred"]),
             "has_thumb": bool(r["has_thumb"]), "inline": r["mime"] in INLINE_MIMES,
+            "cat": file_category(r["mime"], r["name"]), "taken_at": r["taken_at"],
             "created_at": r["created_at"], "updated_at": r["updated_at"] or r["created_at"],
             "trashed_at": r["trashed_at"]}
 
@@ -1144,6 +1453,7 @@ def note_json(r):
     return {"type": "note", "id": r["id"], "name": r["title"], "source_type": r["source_type"],
             "folder_id": r["folder_id"], "starred": bool(r["pinned"]),
             "tags": unpack_tags(r["tags"]), "excerpt": r["excerpt"] or "",
+            "cat": note_category(r["source_type"]),
             "created_at": r["created_at"], "updated_at": r["updated_at"] or r["created_at"],
             "trashed_at": r["trashed_at"]}
 
@@ -1199,15 +1509,26 @@ def _extract_text_for(path, ext):
     return extract_txt(data)
 
 
-def finalize_file(db, part_path, raw_name, folder_id, tags):
-    """Move a fully received upload into storage and register it.
+def finalize_file(db, part_path, raw_name, folder_id, tags, rel_dir=""):
+    """Classify a fully received upload, file it, and register it.
+
+    The type comes from the file's bytes (sniff_mime). The file goes into the
+    requested folder only if that folder is in the file's category; otherwise
+    it is routed to its category (e.g. a PDF dropped into Photos lands in
+    Documents). A dropped folder's sub-path (rel_dir) is recreated there.
 
     PDF/DOCX/TXT/MD also get their text indexed (as a document row linked by
     file_id) so full-text search covers them, as before Drive existed.
     """
     name = clean_name(raw_name, "file")
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    mime = sniff_mime(part_path, name)
+    category = file_category(mime, name)
+    requested = folder_id
+    if folder_id is None or _root_cat_map(db).get(folder_id) != category:
+        folder_id = category_roots(db)[category]
+    folder_id = ensure_subpath(db, folder_id, rel_dir)
+    taken_at = photo_taken_at(part_path) if category == "photos" else None
     key = uuid.uuid4().hex
     dest = os.path.join(FILES_DIR, key)
     os.makedirs(FILES_DIR, exist_ok=True)
@@ -1216,20 +1537,29 @@ def finalize_file(db, part_path, raw_name, folder_id, tags):
     has_thumb = make_thumb(dest, key, mime)
     now = utcnow_iso()
     cur = db.execute(
-        "INSERT INTO files (folder_id, name, mime, size, storage_key, has_thumb, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (folder_id, name, mime, size, key, int(has_thumb), now, now),
+        "INSERT INTO files (folder_id, name, mime, size, storage_key, has_thumb, created_at, "
+        "updated_at, sniffed, taken_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+        (folder_id, name, mime, size, key, int(has_thumb), now, now, taken_at),
     )
     file_id = cur.lastrowid
     db.commit()
 
     indexed = 0
-    if ext in TEXT_EXTRACTORS and size <= EXTRACT_MAX_MB * 1024 * 1024:
+    if mime == "application/pdf":
+        extractor = "pdf"
+    elif mime == DOCX_MIME:
+        extractor = "docx"
+    elif ext in ("txt", "md") or mime == "text/plain":
+        extractor = "txt"
+    else:
+        extractor = None
+    if extractor and size <= EXTRACT_MAX_MB * 1024 * 1024:
         try:
-            text = _extract_text_for(dest, ext)
+            text = _extract_text_for(dest, extractor)
             paragraphs = split_paragraphs(text)
             if paragraphs:
-                doc_id = store_document(name, ext, text, paragraphs, tags)
+                source = ext if ext in TEXT_EXTRACTORS else extractor
+                doc_id = store_document(name, source, text, paragraphs, tags)
                 db.execute("UPDATE documents SET file_id = ?, folder_id = ? WHERE id = ?",
                            (file_id, folder_id, doc_id))
                 db.commit()
@@ -1239,6 +1569,9 @@ def finalize_file(db, part_path, raw_name, folder_id, tags):
     row = db.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
     info = file_json(row)
     info["indexed_paragraphs"] = indexed
+    info["category"] = category
+    info["path"] = [c["name"] for c in _breadcrumbs(db, folder_id)]
+    info["routed"] = requested is not None and _root_cat_map(db).get(requested) != category
     return info
 
 
@@ -1265,8 +1598,25 @@ def _purge_note(db, doc_id):
 
 
 def _purge_folder(db, folder_id):
+    # Items inside that were trashed on their own stay restorable: re-home
+    # them to their category folder (still in the trash) before purging.
+    roots = category_roots(db)
+    home = roots.get(_root_cat_map(db).get(folder_id) or "other")
+    for r in db.execute("SELECT id FROM folders WHERE trashed_at IS NOT NULL AND id != ?",
+                        (folder_id,)).fetchall():
+        if r["id"] in _subtree_ids(db, folder_id):
+            db.execute("UPDATE folders SET parent_id = ? WHERE id = ?", (home, r["id"]))
     ids = _subtree_ids(db, folder_id)
     marks = ",".join("?" * len(ids))
+    for r in db.execute(f"SELECT id, mime, name FROM files WHERE trashed_at IS NOT NULL "
+                        f"AND folder_id IN ({marks})", list(ids)).fetchall():
+        to = roots.get(file_category(r["mime"], r["name"]), home)
+        db.execute("UPDATE files SET folder_id = ? WHERE id = ?", (to, r["id"]))
+        db.execute("UPDATE documents SET folder_id = ? WHERE file_id = ?", (to, r["id"]))
+    for r in db.execute(f"SELECT id, source_type FROM documents WHERE trashed_at IS NOT NULL "
+                        f"AND file_id IS NULL AND folder_id IN ({marks})", list(ids)).fetchall():
+        db.execute("UPDATE documents SET folder_id = ? WHERE id = ?",
+                   (roots.get(note_category(r["source_type"]), home), r["id"]))
     for r in db.execute(f"SELECT id FROM files WHERE folder_id IN ({marks})", list(ids)).fetchall():
         _purge_file(db, r["id"])
     for r in db.execute(
@@ -1318,10 +1668,13 @@ def drive_list():
     """Contents of one folder (root when ?folder is empty)."""
     db = get_db()
     fid = _int_or_none(request.args.get("folder"))
-    if fid is not None:
-        exists = db.execute("SELECT 1 FROM folders WHERE id = ?", (fid,)).fetchone()
-        if not exists or fid in _dead_folder_ids(db):
-            return jsonify({"error": "Folder not found."}), 404
+    if fid is None:
+        return jsonify({"folder": None, "breadcrumbs": [], "category": None,
+                        "items": category_items(db)})
+    exists = db.execute("SELECT 1 FROM folders WHERE id = ?", (fid,)).fetchone()
+    if not exists or fid in _dead_folder_ids(db):
+        return jsonify({"error": "Folder not found."}), 404
+    rcm = _root_cat_map(db)
     folders = db.execute(
         """SELECT f.*, (SELECT COUNT(*) FROM folders c WHERE c.parent_id = f.id AND c.trashed_at IS NULL)
                       + (SELECT COUNT(*) FROM files c WHERE c.folder_id = f.id AND c.trashed_at IS NULL)
@@ -1341,18 +1694,50 @@ def drive_list():
     return jsonify({
         "folder": fid,
         "breadcrumbs": _breadcrumbs(db, fid),
-        "items": [folder_json(r, {"item_count": r["item_count"]}) for r in folders]
+        "category": rcm.get(fid),
+        "items": [folder_json(r, {"item_count": r["item_count"]}, rcm) for r in folders]
                  + [file_json(r) for r in files] + [note_json(r) for r in notes],
     })
 
 
+def category_stats(db):
+    """Per category: number of files/notes anywhere beneath it, and bytes."""
+    rcm, dead = _root_cat_map(db), _dead_folder_ids(db)
+    stats = {k: {"count": 0, "size": 0} for k, _ in CATEGORIES}
+    for r in db.execute("SELECT folder_id, size FROM files WHERE trashed_at IS NULL"):
+        c = rcm.get(r["folder_id"])
+        if c and r["folder_id"] not in dead:
+            stats[c]["count"] += 1
+            stats[c]["size"] += r["size"]
+    for r in db.execute(
+            "SELECT folder_id FROM documents WHERE trashed_at IS NULL AND file_id IS NULL"):
+        c = rcm.get(r["folder_id"])
+        if c and r["folder_id"] not in dead:
+            stats[c]["count"] += 1
+    return stats
+
+
+def category_items(db):
+    stats = category_stats(db)
+    rows = {r["category"]: r for r in db.execute("SELECT * FROM folders WHERE category IS NOT NULL")}
+    return [folder_json(rows[k], {"item_count": stats[k]["count"], "total_size": stats[k]["size"]})
+            for k, _ in CATEGORIES if k in rows]
+
+
+@app.route("/api/categories")
+@login_required
+def list_categories():
+    return jsonify({"items": category_items(get_db())})
+
+
 def _alive_items(db, where_files, where_notes, where_folders=None, args=(), limit=200):
     dead = _dead_folder_ids(db)
+    rcm = _root_cat_map(db)
     items = []
     if where_folders:
         for r in db.execute(f"SELECT * FROM folders WHERE trashed_at IS NULL AND {where_folders}", args):
             if r["id"] not in dead:
-                items.append(folder_json(r))
+                items.append(folder_json(r, None, rcm))
     for r in db.execute(f"SELECT * FROM files WHERE trashed_at IS NULL AND {where_files}", args):
         if r["folder_id"] not in dead:
             items.append(file_json(r))
@@ -1415,7 +1800,9 @@ def drive_search():
 def drive_trash():
     db = get_db()
     housekeeping(db)
-    items = [folder_json(r) for r in db.execute("SELECT * FROM folders WHERE trashed_at IS NOT NULL")]
+    rcm = _root_cat_map(db)
+    items = [folder_json(r, None, rcm)
+             for r in db.execute("SELECT * FROM folders WHERE trashed_at IS NOT NULL")]
     items += [file_json(r) for r in db.execute("SELECT * FROM files WHERE trashed_at IS NOT NULL")]
     items += [note_json(r) for r in db.execute(
         f"SELECT {_NOTE_COLS} FROM documents d WHERE d.trashed_at IS NOT NULL AND d.file_id IS NULL")]
@@ -1447,7 +1834,8 @@ def drive_storage():
         k = file_kind(r["mime"], r["name"])
         by_kind[k] = by_kind.get(k, 0) + r["size"]
     disk = shutil.disk_usage(DATA_DIR)
-    return jsonify({"used": used, "files": count, "by_kind": by_kind,
+    by_category = {k: v["size"] for k, v in category_stats(db).items()}
+    return jsonify({"used": used, "files": count, "by_kind": by_kind, "by_category": by_category,
                     "disk_total": disk.total, "disk_free": disk.free,
                     "max_file_bytes": int(MAX_FILE_GB * 1024**3)})
 
@@ -1461,6 +1849,11 @@ def create_folder():
     parent = _live_folder_id(db, data.get("parent_id"))
     if _int_or_none(data.get("parent_id")) is not None and parent is None:
         return jsonify({"error": "Parent folder not found."}), 404
+    if parent is None:   # top level holds only the category folders
+        roots = category_roots(db)
+        if data.get("category") not in roots:
+            return jsonify({"error": "Create folders inside a category (Photos, Documents…)."}), 400
+        parent = roots[data["category"]]
     name = clean_name(data.get("name"), "New folder")
     # Reuse an existing same-named folder when asked (used by folder uploads).
     if data.get("reuse"):
@@ -1469,7 +1862,7 @@ def create_folder():
             (parent, name),
         ).fetchone()
         if row:
-            return jsonify(folder_json(row))
+            return jsonify(folder_json(row, None, _root_cat_map(db)))
     now = utcnow_iso()
     cur = db.execute(
         "INSERT INTO folders (name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -1477,7 +1870,11 @@ def create_folder():
     )
     db.commit()
     row = db.execute("SELECT * FROM folders WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return jsonify(folder_json(row)), 201
+    return jsonify(folder_json(row, None, _root_cat_map(db))), 201
+
+
+def _is_system(kind, row):
+    return kind == "folder" and bool(row["category"])
 
 
 def _get_item(db, kind, item_id):
@@ -1497,6 +1894,8 @@ def update_item(kind, item_id):
     data = request.get_json(silent=True) or {}
     table = _TABLE[kind]
     sets, args = [], []
+    if _is_system(kind, row) and ("name" in data or "folder_id" in data):
+        return jsonify({"error": "Category folders can't be renamed or moved."}), 400
 
     if "name" in data:
         name = clean_name(data["name"], "")
@@ -1509,8 +1908,23 @@ def update_item(kind, item_id):
 
     if "folder_id" in data:
         target = _int_or_none(data["folder_id"])
-        if target is not None and _live_folder_id(db, target) is None:
+        if target is None:
+            return jsonify({"error": "Pick a folder inside a category."}), 400
+        if _live_folder_id(db, target) is None:
             return jsonify({"error": "Destination folder not found."}), 404
+        rcm = _root_cat_map(db)
+        dest_cat = rcm.get(target)
+        if kind == "file":
+            home = file_category(row["mime"], row["name"])
+            allowed = (home,)
+        elif kind == "note":
+            home, allowed = "notes", NOTE_CATEGORIES
+        else:
+            home = rcm.get(item_id)
+            allowed = (home,)
+        if dest_cat not in allowed:
+            return jsonify({"error": f"This belongs in {CATEGORY_LABEL.get(home, home)} — "
+                                     f"it can't go into {CATEGORY_LABEL.get(dest_cat, dest_cat)}."}), 400
         if kind == "folder" and target is not None and target in _subtree_ids(db, item_id):
             return jsonify({"error": "Can't move a folder into itself."}), 400
         sets.append("parent_id = ?" if kind == "folder" else "folder_id = ?")
@@ -1536,8 +1950,11 @@ def update_item(kind, item_id):
 @login_required
 def trash_item(kind, item_id):
     db = get_db()
-    if _get_item(db, kind, item_id) is None:
+    row = _get_item(db, kind, item_id)
+    if row is None:
         return jsonify({"error": "Not found."}), 404
+    if _is_system(kind, row):
+        return jsonify({"error": "Category folders can't be deleted."}), 400
     db.execute(f"UPDATE {_TABLE[kind]} SET trashed_at = ? WHERE id = ?", (utcnow_iso(), item_id))
     db.commit()
     return jsonify({"trashed": True})
@@ -1552,9 +1969,17 @@ def restore_item(kind, item_id):
         return jsonify({"error": "Not found."}), 404
     parent_col = "parent_id" if kind == "folder" else "folder_id"
     parent = row[parent_col]
-    # If its folder is gone or still in the trash, restore to the root.
+    # If its folder is gone or still in the trash, restore to its category.
     if parent is not None and _live_folder_id(db, parent) is None:
         parent = None
+    if parent is None:
+        if kind == "file":
+            home = file_category(row["mime"], row["name"])
+        elif kind == "note":
+            home = note_category(row["source_type"])
+        else:
+            home = _root_cat_map(db).get(item_id) or _majority_category(db, item_id)
+        parent = category_roots(db)[home]
     db.execute(f"UPDATE {_TABLE[kind]} SET trashed_at = NULL, {parent_col} = ? WHERE id = ?",
                (parent, item_id))
     if kind == "file":
@@ -1567,8 +1992,11 @@ def restore_item(kind, item_id):
 @login_required
 def delete_item_forever(kind, item_id):
     db = get_db()
-    if _get_item(db, kind, item_id) is None:
+    row = _get_item(db, kind, item_id)
+    if row is None:
         return jsonify({"error": "Not found."}), 404
+    if _is_system(kind, row):
+        return jsonify({"error": "Category folders can't be deleted."}), 400
     _purge(db, kind, item_id)
     db.commit()
     return jsonify({"deleted": True})
@@ -1596,9 +2024,11 @@ def upload_init():
         return jsonify({"error": "Folder not found."}), 404
     upload_id = uuid.uuid4().hex
     db.execute(
-        "INSERT INTO uploads (id, name, size, folder_id, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO uploads (id, name, size, folder_id, tags, created_at, rel_dir) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (upload_id, clean_name(data.get("name"), "file"), size, folder_id,
-         pack_tags(normalize_tags(data.get("tags"))), utcnow_iso()),
+         pack_tags(normalize_tags(data.get("tags"))), utcnow_iso(),
+         clean_rel_dir(data.get("rel_dir"))),
     )
     db.commit()
     open(os.path.join(UPLOADS_DIR, upload_id + ".part"), "wb").close()
@@ -1664,7 +2094,7 @@ def upload_complete(upload_id):
         return jsonify({"error": "Upload incomplete.", "received": received}), 409
     # The folder may have been trashed while the upload ran.
     folder_id = _live_folder_id(db, up["folder_id"])
-    info = finalize_file(db, part, up["name"], folder_id, unpack_tags(up["tags"]))
+    info = finalize_file(db, part, up["name"], folder_id, unpack_tags(up["tags"]), up["rel_dir"])
     db.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
     db.commit()
     return jsonify(info), 201

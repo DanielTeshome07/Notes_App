@@ -59,6 +59,18 @@
     folder: "📁", note: "📝", image: "🖼️", video: "🎬", audio: "🎵", pdf: "📕",
     doc: "📘", sheet: "📗", slides: "📙", archive: "🗜️", text: "📄", other: "📦",
   };
+  // Top-level categories (system folders). Files are filed into these by type.
+  const CATS = {
+    photos: { icon: "📷", label: "Photos", hint: "Pictures and screenshots" },
+    videos: { icon: "🎬", label: "Videos", hint: "Clips and recordings" },
+    music: { icon: "🎵", label: "Music", hint: "Songs, voice memos, audio" },
+    documents: { icon: "📄", label: "Documents", hint: "PDF, Word, Excel, text" },
+    notes: { icon: "📝", label: "Notes", hint: "Written in the editor" },
+    other: { icon: "📦", label: "Other", hint: "Archives and everything else" },
+  };
+  const CAT_ORDER = Object.keys(CATS);
+  // Where an item is allowed to live (mirrors the server's move rules).
+  const allowedCats = (it) => it.type === "note" ? ["notes", "documents"] : [it.cat];
   const kindOf = (it) => it.type === "folder" ? "folder" : it.type === "note" ? "note" : it.kind;
   const keyOf = (it) => it.type + ":" + it.id;
 
@@ -80,6 +92,9 @@
     view: "drive",        // drive | recent | starred | trash | search
     folder: null,         // current folder id (drive view)
     crumbs: [],
+    category: null,       // category of the folder being viewed
+    cats: [],             // the six category folders (id, cat, counts)
+    recent: [],
     items: [],
     query: "",
     layout: pref("driveLayout", "grid"),
@@ -121,8 +136,19 @@
     try {
       let data;
       if (state.view === "drive") {
-        data = await api("/api/drive" + (state.folder != null ? "?folder=" + state.folder : ""));
+        const [d, recent] = await Promise.all([
+          api("/api/drive" + (state.folder != null ? "?folder=" + state.folder : "")),
+          state.folder == null ? api("/api/drive/recent") : Promise.resolve(null),
+        ]);
+        data = d;
         state.crumbs = data.breadcrumbs;
+        state.category = data.category;
+        if (state.folder == null) {
+          state.cats = data.items;
+          state.recent = recent.items.slice(0, 12);
+          data = { items: data.items.concat(state.recent) };
+          renderCatNav();
+        }
       } else if (state.view === "tag") {
         data = await api("/api/drive/tag?t=" + encodeURIComponent(state.tag));
       } else if (state.view === "search") {
@@ -142,6 +168,19 @@
     }
     loadStorage();
     loadTags();
+    if (state.view !== "drive" || state.folder != null) loadCats();
+    else renderCatNav();
+  }
+
+  async function loadCats() {
+    try { state.cats = (await api("/api/categories")).items; renderCatNav(); } catch (_) { /* non-critical */ }
+  }
+  function renderCatNav() {
+    const top = state.crumbs[0]?.id;
+    $("#cat-nav").innerHTML = state.cats.map((c) => `
+      <a href="#/folder/${c.id}" class="${state.view === "drive" && top === c.id ? "active" : ""}" data-drop-folder="${c.id}">
+        <span>${CATS[c.cat]?.icon || "📁"} ${esc(c.name)}</span><span class="muted">${c.item_count || ""}</span>
+      </a>`).join("");
   }
 
   async function loadTags() {
@@ -160,7 +199,11 @@
     try {
       const s = await api("/api/storage");
       const cap = s.used + s.disk_free;
-      $("#storage-fill").style.width = Math.max(1, Math.min(100, (s.used / cap) * 100)) + "%";
+      // One coloured segment per category, sized by its share of the disk.
+      $("#storage-fill").outerHTML = `<span id="storage-fill" class="d-storage-segs">${CAT_ORDER
+        .filter((k) => (s.by_category || {})[k])
+        .map((k) => `<i class="seg-${k}" title="${CATS[k].label}: ${fmtSize(s.by_category[k])}"
+             style="width:${Math.max(0.6, (s.by_category[k] / cap) * 100)}%"></i>`).join("")}</span>`;
       $("#storage-text").textContent =
         `${fmtSize(s.used)} used · ${fmtSize(s.disk_free)} free · ${s.files} file${s.files === 1 ? "" : "s"}`;
     } catch (_) { /* non-critical */ }
@@ -185,7 +228,8 @@
     if (state.view === "tag") { c.innerHTML = `<span># ${esc(state.tag)}</span>`; return; }
     if (state.view === "search") { c.innerHTML = `<span>Search results for “${esc(state.query)}”</span>`; return; }
     if (titles[state.view]) { c.innerHTML = `<span>${titles[state.view]}</span>`; return; }
-    const parts = [`<a href="#/" data-drop-folder="">My Drive</a>`];
+    if (state.view === "drive" && state.folder == null) { c.innerHTML = "<span>My Drive</span>"; return; }
+    const parts = [`<a href="#/">My Drive</a>`];
     state.crumbs.forEach((f, i) => {
       parts.push(i === state.crumbs.length - 1
         ? `<span>${esc(f.name)}</span>`
@@ -213,23 +257,70 @@
     return fmtSize(it.size) + " · " + relTime(it.updated_at);
   }
 
+  function catTileHtml(c) {
+    const m = CATS[c.cat] || { icon: "📁", hint: "" };
+    return `
+      <div class="d-cat d-item cat-${c.cat}" data-key="${keyOf(c)}" data-drop-folder="${c.id}" tabindex="0">
+        <span class="d-cat-icon">${m.icon}</span>
+        <span class="d-cat-text">
+          <span class="d-cat-name">${esc(c.name)}${c.starred ? ' <span class="d-star">★</span>' : ""}</span>
+          <span class="d-cat-meta">${c.item_count ? `${c.item_count} item${c.item_count === 1 ? "" : "s"}` : m.hint}${c.total_size ? " · " + fmtSize(c.total_size) : ""}</span>
+        </span>
+      </div>`;
+  }
+
+  // Photos: a gallery of square thumbnails grouped by month taken.
+  function galleryHtml(photos) {
+    const groups = new Map();
+    photos.slice().sort((a, b) => (b.taken_at || b.created_at || "").localeCompare(a.taken_at || a.created_at || ""))
+      .forEach((p) => {
+        const d = new Date(((p.taken_at || p.created_at || "").slice(0, 7) || "1970-01") + "-01T12:00:00");
+        const label = isNaN(d) ? "Undated" : d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+        if (!groups.has(label)) groups.set(label, []);
+        groups.get(label).push(p);
+      });
+    return [...groups].map(([label, ps]) => `
+      <h4 class="d-section">${esc(label)} <span class="muted">· ${ps.length}</span></h4>
+      <div class="d-gallery">${ps.map((p) => `
+        <div class="d-ptile d-item${state.selected.has(keyOf(p)) ? " sel" : ""}" data-key="${keyOf(p)}" tabindex="0" draggable="true" title="${esc(p.name)}">
+          ${p.has_thumb ? `<img loading="lazy" src="/files/${p.id}/thumb" alt="${esc(p.name)}">`
+            : `<span class="d-big-icon">🖼️</span><span class="d-ptile-name">${esc(p.name)}</span>`}
+          ${p.starred ? '<span class="d-ptile-star">★</span>' : ""}
+          <span class="d-check" aria-hidden="true">✓</span>
+          <button class="d-more" aria-label="More actions">⋮</button>
+        </div>`).join("")}</div>`).join("");
+  }
+
   function render() {
     renderCrumbs();
     const box = $("#items");
-    const items = sortedItems();
-    state.visible = items;
+    const atRoot = state.view === "drive" && state.folder == null;
+    const gallery = state.view === "drive" && state.category === "photos" && state.layout === "grid";
+    $("#sort").classList.toggle("hidden", atRoot || gallery);
+    const items = atRoot ? state.items.slice() : sortedItems();
+    state.visible = atRoot ? state.recent : items;
     box.className = "d-items " + (state.layout === "list" ? "d-list" : "d-grid");
     $("#view-toggle").textContent = state.layout === "list" ? "▦" : "☷";
     if (!items.length) {
       const empty = {
-        drive: state.folder == null
-          ? "Your drive is empty. Drop files here, or use <b>＋ New</b> to upload photos, videos, PDFs, or write a note."
+        drive: state.crumbs.length === 1 && CATS[state.category]
+          ? `No ${CATS[state.category].label.toLowerCase()} yet. Drop files anywhere — they're sorted into the right place automatically.`
           : "This folder is empty. Drop files here or use <b>＋ New</b>.",
         recent: "Nothing yet.", tag: "Nothing has this tag.", starred: "Star files and folders to find them here quickly.",
         trash: "Trash is empty.", search: "No files or folders match that name.",
       };
       box.className = "d-items";
       box.innerHTML = `<div class="d-empty">${empty[state.view] || ""}</div>`;
+      updateSelbar();
+      return;
+    }
+    if (atRoot) {
+      // Home: one tile per category, then recently changed items.
+      box.className = "d-items";
+      const recent = state.recent;
+      box.innerHTML = `<div class="d-cats">${state.cats.map(catTileHtml).join("")}</div>
+        <p class="d-cats-hint muted">New uploads are sorted automatically: photos, videos, music and documents each go to their own place.</p>` +
+        (recent.length ? `<h4 class="d-section">Recent</h4><div class="d-grid">${recent.map(cardHtml).join("")}</div>` : "");
       updateSelbar();
       return;
     }
@@ -245,7 +336,31 @@
           <button class="d-more" aria-label="More actions">⋮</button>
         </div>`).join("");
     } else {
-      const card = (it) => `
+      const card = cardHtml;
+      const folders = items.filter((i) => i.type === "folder");
+      const rest = items.filter((i) => i.type !== "folder");
+      if (gallery) {
+        const photos = rest.filter((i) => i.type === "file" && i.kind === "image");
+        const others = rest.filter((i) => !photos.includes(i));
+        box.className = "d-items";
+        box.innerHTML =
+          (folders.length ? `<h4 class="d-section">Folders</h4><div class="d-grid d-grid-folders">${folders.map(card).join("")}</div>` : "") +
+          galleryHtml(photos) +
+          (others.length ? `<h4 class="d-section">Other files</h4><div class="d-grid">${others.map(card).join("")}</div>` : "");
+        updateSelbar();
+        return;
+      }
+      // Drive-style: compact folder tiles on top, then files and notes.
+      box.className = "d-items";
+      box.innerHTML =
+        (folders.length ? `${rest.length ? '<h4 class="d-section">Folders</h4>' : ""}<div class="d-grid d-grid-folders">${folders.map(card).join("")}</div>` : "") +
+        (rest.length ? `${folders.length ? '<h4 class="d-section">Files</h4>' : ""}<div class="d-grid">${rest.map(card).join("")}</div>` : "");
+    }
+    updateSelbar();
+  }
+
+  function cardHtml(it) {
+    return `
         <div class="d-card d-item d-k-${kindOf(it)}${state.selected.has(keyOf(it)) ? " sel" : ""}" data-key="${keyOf(it)}" tabindex="0"
              draggable="${state.view !== "trash"}" ${it.type === "folder" ? `data-drop-folder="${it.id}"` : ""}>
           <div class="d-thumb">${thumbHtml(it)}</div>
@@ -258,15 +373,6 @@
             <button class="d-more" aria-label="More actions">⋮</button>
           </div>
         </div>`;
-      // Drive-style: compact folder tiles on top, then files and notes.
-      const folders = items.filter((i) => i.type === "folder");
-      const rest = items.filter((i) => i.type !== "folder");
-      box.className = "d-items";
-      box.innerHTML =
-        (folders.length ? `${rest.length ? '<h4 class="d-section">Folders</h4>' : ""}<div class="d-grid d-grid-folders">${folders.map(card).join("")}</div>` : "") +
-        (rest.length ? `${folders.length ? '<h4 class="d-section">Files</h4>' : ""}<div class="d-grid">${rest.map(card).join("")}</div>` : "");
-    }
-    updateSelbar();
   }
 
   const itemByKey = (k) => state.items.find((it) => keyOf(it) === k);
@@ -305,6 +411,7 @@
   }
 
   function toggleSelect(it) {
+    if (it.system) return;
     const k = keyOf(it);
     state.selected.has(k) ? state.selected.delete(k) : state.selected.add(k);
     const el = $(`.d-item[data-key="${CSS.escape(k)}"]`);
@@ -371,6 +478,8 @@
     const acts = [];
     if (state.view === "trash") {
       acts.push(["restore", "↺ Restore"], ["forever", "✕ Delete forever"]);
+    } else if (it.system) {
+      acts.push(["open", "📂 Open"], ["star", it.starred ? "☆ Remove star" : "★ Add star"]);
     } else {
       acts.push(["open", it.type === "folder" ? "📂 Open" : it.type === "note" ? "✏️ Open in editor" : "👁 Preview"]);
       if (it.type === "file") acts.push(["download", "⬇ Download"]);
@@ -417,7 +526,8 @@
       else if (act === "locate") goFolder(it.type === "folder" ? it.parent_id : it.folder_id);
       else if (act === "restore") {
         const r = await api(`/api/item/${it.type}/${it.id}/restore`, { method: "POST" });
-        toast(r.folder_id == null && (it.folder_id || it.parent_id) ? "Restored to My Drive (its folder is gone)." : "Restored.", "ok");
+        toast(r.folder_id !== (it.type === "folder" ? it.parent_id : it.folder_id)
+          ? `Restored to ${CATS[it.cat]?.label || "its category"} (its folder is gone).` : "Restored.", "ok");
         load();
       } else if (act === "forever") {
         if (await confirmDlg(`Delete “${it.name}” forever?`, "This can't be undone.", "Delete forever")) {
@@ -494,7 +604,12 @@
   async function moveItems(items) {
     if (!items.length) return;
     const moving = new Set(items.filter((i) => i.type === "folder").map((i) => i.id));
-    let cur = state.view === "drive" ? state.folder : null;
+    // Categories every selected item may live in.
+    const allowed = items.reduce((acc, i) => acc.filter((c) => allowedCats(i).includes(c)), CAT_ORDER);
+    if (!allowed.length) { toast("These items belong in different categories — move them separately.", "error"); return; }
+    if (!state.cats.length) await loadCats();
+    const catRoot = (c) => state.cats.find((x) => x.cat === c)?.id;
+    let cur = state.view === "drive" && allowed.includes(state.category) ? state.folder : catRoot(allowed[0]);
     const renderPicker = async () => {
       const box = $("#mv-list");
       box.innerHTML = '<p class="muted">Loading…</p>';
@@ -503,12 +618,16 @@
         const crumbs = [`<a href="#" data-go="">My Drive</a>`].concat(
           d.breadcrumbs.map((c) => `<a href="#" data-go="${c.id}">${esc(c.name)}</a>`));
         $("#mv-crumbs").innerHTML = crumbs.join(" › ");
-        const folders = d.items.filter((i) => i.type === "folder")
-          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        const folders = cur == null
+          ? d.items.filter((i) => allowed.includes(i.cat))
+          : d.items.filter((i) => i.type === "folder")
+            .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        $("#mv-new").classList.toggle("hidden", cur == null);
+        $("#dlg-ok").disabled = cur == null;
         box.innerHTML = folders.length
           ? folders.map((f) => moving.has(f.id)
             ? `<div class="mv-row disabled">📁 ${esc(f.name)} <span class="muted">(moving)</span></div>`
-            : `<button type="button" class="mv-row" data-go="${f.id}">📁 ${esc(f.name)} <span class="muted">›</span></button>`).join("")
+            : `<button type="button" class="mv-row" data-go="${f.id}">${f.system ? CATS[f.cat]?.icon || "📁" : "📁"} ${esc(f.name)} <span class="muted">›</span></button>`).join("")
           : '<p class="muted">No subfolders.</p>';
       } catch (e) { box.innerHTML = `<p class="status error">${esc(e.message)}</p>`; }
     };
@@ -533,7 +652,8 @@
       collect: () => ({ folder: cur }),
     });
     $("#dlg-body").onclick = null;
-    if (!target) return;
+    $("#dlg-ok").disabled = false;
+    if (!target || target.folder == null) return;
     try {
       await Promise.all(items.map((i) => api(`/api/item/${i.type}/${i.id}`, { method: "PATCH", json: { folder_id: target.folder } })));
       toast(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`, "ok");
@@ -554,6 +674,23 @@
     if (!a) return;
     closeMenus();
     if (a === "folder") {
+      if (currentDest() == null) {
+        const r = await dialog({
+          title: "New folder", okLabel: "Create",
+          bodyHtml: `<input type="text" id="dlg-input" value="Untitled folder" maxlength="255">
+            <label class="muted" for="dlg-cat">Inside</label>
+            <select id="dlg-cat" class="sort-select d-wide">${CAT_ORDER.map((k) =>
+              `<option value="${k}"${k === "documents" ? " selected" : ""}>${CATS[k].icon} ${CATS[k].label}</option>`).join("")}</select>`,
+          onOpen: () => { $("#dlg-input").focus(); $("#dlg-input").select(); },
+          collect: () => ({ name: $("#dlg-input").value.trim(), category: $("#dlg-cat").value }),
+        });
+        if (!r || !r.name) return;
+        try {
+          const f = await api("/api/folders", { method: "POST", json: r });
+          goFolder(f.id);
+        } catch (err) { fail(err); }
+        return;
+      }
       const name = await promptDlg("New folder", "Untitled folder", "Create");
       if (!name) return;
       try { await api("/api/folders", { method: "POST", json: { name, parent_id: currentDest() } }); load(); }
@@ -580,7 +717,9 @@
     if (draggingItems || !e.dataTransfer.types.includes("Files")) return;
     e.preventDefault();
     dragDepth++;
-    $("#drop-target").textContent = state.view === "drive" && state.crumbs.length ? state.crumbs[state.crumbs.length - 1].name : "My Drive";
+    $("#drop-target").textContent = state.view === "drive" && state.crumbs.length
+      ? state.crumbs[state.crumbs.length - 1].name + " (other kinds of files go to their own category)"
+      : "your drive — files are sorted automatically";
     $("#drop-overlay").classList.remove("hidden");
   });
   main.addEventListener("dragleave", () => {
@@ -690,7 +829,8 @@
   function enqueue(list, dest) {
     const files = list.filter((x) => x.file);
     const dirs = list.filter((x) => x.dir);
-    dirs.forEach((d) => ensureFolderPath(dest, d.dir).then(refreshSoon).catch(fail));
+    // Empty dropped folders only make sense inside a chosen folder.
+    if (dest != null) dirs.forEach((d) => ensureFolderPath(dest, d.dir).then(refreshSoon).catch(fail));
     if (!files.length) { refreshSoon(); return; }
     $("#uploads").classList.remove("hidden", "collapsed");
     for (const { file, path } of files) {
@@ -741,6 +881,14 @@
     const done = queue.filter((t) => t.status === "done").length;
     clearTimeout(upHideTimer);
     if (!left && !failed && done) upHideTimer = setTimeout(() => $("#uploads").classList.add("collapsed"), 4000);
+    if (!left && done && !queue.summarized) {
+      queue.summarized = true;
+      const by = {};
+      queue.filter((t) => t.result).forEach((t) => { by[t.result.category] = (by[t.result.category] || 0) + 1; });
+      const parts = CAT_ORDER.filter((k) => by[k]).map((k) => `${by[k]} → ${CATS[k].label}`);
+      if (parts.length) toast(`Sorted ${done} file${done === 1 ? "" : "s"}: ${parts.join(", ")}`, "ok");
+    }
+    if (left) queue.summarized = false;
     $("#up-title").textContent = left
       ? `Uploading ${left} item${left === 1 ? "" : "s"}…`
       : `${done} upload${done === 1 ? "" : "s"} complete` + (failed ? ` · ${failed} failed` : "");
@@ -781,9 +929,10 @@
 
   async function runTask(t) {
     try {
-      const folder = await ensureFolderPath(t.dest, t.path);
-      if (t.status === "cancelled") return;
-      const init = await api("/api/uploads", { method: "POST", json: { name: t.file.name, size: t.file.size, folder_id: folder } });
+      // The server detects the file's type and files it (re-creating the
+      // dropped folder's sub-path, rel_dir, inside the right category).
+      const init = await api("/api/uploads", { method: "POST",
+        json: { name: t.file.name, size: t.file.size, folder_id: t.dest, rel_dir: t.path } });
       t.uploadId = init.upload_id;
       const chunk = init.chunk_size;
       let offset = 0, tries = 0;
@@ -803,7 +952,9 @@
       setRow(t, 100, "Finishing…");
       const info = await api(`/api/uploads/${t.uploadId}/complete`, { method: "POST" });
       t.status = "done";
-      setRow(t, 100, `${fmtSize(t.file.size)} · done` + (info.indexed_paragraphs ? " · text searchable" : ""), "done");
+      t.result = info;
+      setRow(t, 100, `${CATS[info.category]?.icon || ""} → ${info.path.join(" › ")}` +
+        (info.indexed_paragraphs ? " · text searchable" : ""), "done");
       $(`#up-${t.id} .up-cancel`).textContent = "✓";
       refreshSoon();
     } catch (e) {

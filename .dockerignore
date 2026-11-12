@@ -12,3 +12,5 @@ README.md
 .DS_Store
 .vscode/
 .idea/
+devtest/
+backups/

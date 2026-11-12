@@ -299,3 +299,68 @@ body.no-scroll { overflow: hidden; }
   .pv-body { padding: 0 0.4rem 0.8rem; }
   .pv-nav { top: auto; bottom: 1rem; transform: none; }
 }
+
+/* ===== Categories ===== */
+:root {
+  --c-photos: #e8590c; --c-videos: #7048e8; --c-music: #0c8599;
+  --c-documents: #1c7ed6; --c-notes: #2b8a3e; --c-other: #868e96;
+}
+.d-catnav { margin-top: -0.6rem; }
+.d-catnav a { display: flex; justify-content: space-between; gap: 0.5rem; padding-left: 1.6rem; }
+.d-catnav a.drop-hover { outline: 2px dashed var(--accent); }
+.d-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0.9rem; margin-bottom: 0.6rem; }
+.d-cat {
+  --c: var(--c-other);
+  display: flex; align-items: center; gap: 0.9rem; cursor: pointer; user-select: none;
+  padding: 1.1rem 1.1rem; border-radius: 16px; border: 1px solid var(--line);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--c) 14%, var(--field)), var(--field));
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.d-cat:hover { border-color: var(--c); box-shadow: var(--shadow); transform: translateY(-1px); }
+.d-cat:focus-visible { outline: 2px solid var(--c); outline-offset: 2px; }
+.d-cat-icon {
+  flex: none; width: 52px; height: 52px; border-radius: 14px; font-size: 1.6rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--c) 22%, transparent);
+}
+.d-cat-text { display: flex; flex-direction: column; min-width: 0; }
+.d-cat-name { font-weight: 800; font-size: 1.02rem; }
+.d-cat-meta { font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cat-photos { --c: var(--c-photos); } .cat-videos { --c: var(--c-videos); } .cat-music { --c: var(--c-music); }
+.cat-documents { --c: var(--c-documents); } .cat-notes { --c: var(--c-notes); } .cat-other { --c: var(--c-other); }
+.d-cats-hint { font-size: 0.82rem; margin: 0 0 1.2rem; }
+
+/* Storage bar split by category */
+.d-storage-segs { display: flex !important; width: 100% !important; height: 100%; background: transparent !important; gap: 1px; }
+.d-storage-segs i { display: block; height: 100%; border-radius: 99px; }
+.seg-photos { background: var(--c-photos); } .seg-videos { background: var(--c-videos); } .seg-music { background: var(--c-music); }
+.seg-documents { background: var(--c-documents); } .seg-notes { background: var(--c-notes); } .seg-other { background: var(--c-other); }
+
+/* Photo gallery */
+.d-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; margin-bottom: 1rem; }
+.d-ptile {
+  position: relative; aspect-ratio: 1; overflow: hidden; cursor: pointer; border-radius: 6px;
+  background: var(--chip); display: flex; flex-direction: column; align-items: center; justify-content: center;
+  border: 2px solid transparent;
+}
+.d-ptile img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.2s ease; }
+.d-ptile:hover img { transform: scale(1.03); }
+.d-ptile.sel { border-color: var(--accent); }
+.d-ptile.sel img { opacity: 0.8; }
+.d-ptile-name { font-size: 0.72rem; color: var(--muted); padding: 0 0.4rem; text-align: center; overflow-wrap: anywhere; }
+.d-ptile .d-check { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.25); border-color: #fff; }
+.d-ptile.sel .d-check { display: inline-flex; background: var(--accent); border-color: var(--accent); color: #fff; }
+.d-ptile:hover .d-check { display: inline-flex; }
+.d-ptile .d-more {
+  position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.35); color: #fff; opacity: 0;
+}
+.d-ptile:hover .d-more, .d-ptile:focus-within .d-more { opacity: 1; }
+.d-ptile-star { position: absolute; bottom: 4px; right: 6px; color: #ffc107; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+.d-section .muted { font-weight: 500; }
+.d-wide { width: 100%; margin-top: 0.3rem; }
+@media (max-width: 860px) {
+  .d-cats { grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+  .d-cat { flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.9rem; }
+  .d-gallery { grid-template-columns: repeat(3, 1fr); gap: 2px; }
+  .d-ptile .d-more { opacity: 1; }
+}
